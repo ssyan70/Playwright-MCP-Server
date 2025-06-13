@@ -15,6 +15,7 @@ async function initBrowser() {
   if (!browser) {
     browser = await chromium.launch({ 
       headless: true,
+      executablePath: '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chrome',
       args: [
         '--no-sandbox', 
         '--disable-setuid-sandbox',
