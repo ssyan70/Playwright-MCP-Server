@@ -13,24 +13,17 @@ app.get('/health', (req, res) => {
 
 // Initialize browser with Render-optimized settings
 async function initBrowser() {
-  // Check if browser exists and is still connected
-  if (browser && browser.isConnected()) {
-    console.log('Reusing existing browser instance');
-    return browser;
-  }
+  console.log('Creating fresh browser instance...');
   
-  // If browser exists but disconnected, clean it up
+  // Always create a fresh browser instance to avoid reuse issues
   if (browser) {
-    console.log('Browser disconnected, cleaning up...');
     try {
       await browser.close();
     } catch (e) {
-      console.log('Error closing old browser:', e.message);
+      // Ignore errors when closing old browser
     }
     browser = null;
   }
-  
-  console.log('Creating new browser instance...');
   
   // Set the browsers path to a persistent directory
   const browsersPath = '/opt/render/project/playwright';
@@ -69,21 +62,17 @@ async function initBrowser() {
       '--disable-features=VizDisplayCompositor',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding'
+      '--disable-renderer-backgrounding',
+      '--memory-pressure-off' // Disable memory pressure detection
     ]
   };
   
   try {
     console.log('Attempting to launch browser...');
     
-    // Try regular chromium launch (should work now with proper path)
+    // Create fresh browser instance
     browser = await chromium.launch(launchOptions);
     console.log('Browser launched successfully!');
-    
-    // Test browser connection
-    if (!browser.isConnected()) {
-      throw new Error('Browser launched but is not connected');
-    }
     
     return browser;
     
@@ -246,15 +235,8 @@ async function handleToolCall(toolName, args) {
   try {
     console.log(`Handling tool call: ${toolName}`);
     
-    // Get browser instance (reuse if available, create if needed)
+    // Get fresh browser instance for each request
     browserInstance = await initBrowser();
-    
-    // Verify browser is still connected
-    if (!browserInstance.isConnected()) {
-      console.log('Browser disconnected, creating new instance');
-      browser = null; // Reset global browser
-      browserInstance = await initBrowser();
-    }
     
     // Create context and page
     context = await browserInstance.newContext();
@@ -376,6 +358,7 @@ async function handleToolCall(toolName, args) {
     console.error(`Tool call error for ${toolName}:`, error.message);
     throw error;
   } finally {
+    // Clean up resources
     if (context) {
       try {
         console.log('Closing context...');
@@ -385,7 +368,18 @@ async function handleToolCall(toolName, args) {
         console.log('Error closing context:', closeError.message);
       }
     }
-    // Don't close the browser - keep it alive for reuse
+    
+    // Close browser to free memory after each request
+    if (browserInstance) {
+      try {
+        console.log('Closing browser...');
+        await browserInstance.close();
+        browser = null; // Reset global reference
+        console.log('Browser closed successfully');
+      } catch (closeError) {
+        console.log('Error closing browser:', closeError.message);
+      }
+    }
   }
 }
 
