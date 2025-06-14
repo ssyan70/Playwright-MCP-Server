@@ -184,7 +184,8 @@ const httpServer = http.createServer((req, res) => {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*'
+      'Access-Control-Allow-Origin': '*',
+      'X-Accel-Buffering': 'no' // Disable nginx buffering
     });
 
     // Generate connection ID
@@ -194,19 +195,13 @@ const httpServer = http.createServer((req, res) => {
     // Store connection
     connections.set(connectionId, res);
 
-    // Send initial endpoint event - try different format
-    res.write(`event: endpoint\n`);
+    // Send simple endpoint event - just the path
     res.write(`data: /mcp\n\n`);
-    
-    // Also send a ready event that some MCP clients expect
-    res.write(`event: ready\n`);
-    res.write(`data: {"endpoint": "/mcp"}\n\n`);
 
     // Keep connection alive with periodic heartbeats
     const heartbeat = setInterval(() => {
       try {
-        res.write(`event: heartbeat\n`);
-        res.write(`data: ${Date.now()}\n\n`);
+        res.write(`: heartbeat ${Date.now()}\n\n`);
       } catch (error) {
         console.log(`Heartbeat failed for connection ${connectionId}:`, error.message);
         clearInterval(heartbeat);
