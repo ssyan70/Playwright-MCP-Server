@@ -104,7 +104,8 @@ app.post('/', async (req, res) => {
                     description: 'The URL to navigate to'
                   }
                 },
-                required: ['url']
+                required: ['url'],
+                additionalProperties: false
               }
             },
             {
@@ -134,14 +135,17 @@ app.post('/', async (req, res) => {
                         action: {
                           type: 'string',
                           description: 'Action to perform: fill, select, check, click',
-                          enum: ['fill', 'select', 'check', 'click']
+                          enum: ['fill', 'select', 'check', 'click'],
+                          default: 'fill'
                         }
                       },
-                      required: ['selector', 'value']
+                      required: ['selector', 'value'],
+                      additionalProperties: false
                     }
                   }
                 },
-                required: ['url', 'fields']
+                required: ['url', 'fields'],
+                additionalProperties: false
               }
             },
             {
@@ -159,7 +163,8 @@ app.post('/', async (req, res) => {
                     description: 'CSS selector for the element to click'
                   }
                 },
-                required: ['url', 'selector']
+                required: ['url', 'selector'],
+                additionalProperties: false
               }
             }
           ]
