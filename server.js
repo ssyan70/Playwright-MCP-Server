@@ -5,7 +5,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
+import http from 'http';
 
+// Create MCP Server
 const server = new Server(
   {
     name: 'playwright-mcp-server',
@@ -18,7 +20,28 @@ const server = new Server(
   }
 );
 
-// List available tools
+// HTTP Server for Render health checks
+const PORT = process.env.PORT || 10000;
+const httpServer = http.createServer((req, res) => {
+  res.writeHead(200, { 
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  });
+  res.end(JSON.stringify({ 
+    status: 'healthy', 
+    service: 'playwright-mcp-server',
+    tools: ['navigate_to_url', 'fill_form', 'click_element', 'get_page_content'],
+    timestamp: new Date().toISOString()
+  }));
+});
+
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`HTTP Health server running on port ${PORT}`);
+});
+
+// List available tools for MCP
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
@@ -99,7 +122,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-// Handle tool execution
+// Handle tool execution for MCP
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -253,10 +276,13 @@ async function handleGetPageContent(args) {
   }
 }
 
-async function main() {
+// Start MCP Server
+async function startMCP() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.log('Playwright MCP Server running on port 10000');
+  console.log('Playwright MCP Server connected via stdio');
 }
 
-main().catch(console.error);
+// Start everything
+console.log('Playwright MCP Server running on port 10000');
+startMCP().catch(console.error);
