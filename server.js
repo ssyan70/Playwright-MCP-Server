@@ -248,18 +248,14 @@ async function handleToolCall(toolName, args) {
       case 'navigate_to_url':
         console.log(`Navigating to: ${args.url}`);
         await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
-        const navScreenshot = await page.screenshot({ encoding: 'base64' });
+        // Remove screenshot capture for now
+        // const navScreenshot = await page.screenshot({ encoding: 'base64' });
         
         return {
           content: [
             {
               type: 'text',
               text: `Successfully navigated to ${args.url}`
-            },
-            {
-              type: 'image',
-              data: navScreenshot,
-              mimeType: 'image/png'
             }
           ]
         };
@@ -306,21 +302,17 @@ async function handleToolCall(toolName, args) {
           }
         }
         
-        const formScreenshot = await page.screenshot({ 
-          encoding: 'base64',
-          fullPage: true 
-        });
+        // Remove screenshot capture for now
+        // const formScreenshot = await page.screenshot({ 
+        //   encoding: 'base64',
+        //   fullPage: true 
+        // });
         
         return {
           content: [
             {
               type: 'text',
               text: `Form filling completed. Results: ${JSON.stringify(results, null, 2)}`
-            },
-            {
-              type: 'image',
-              data: formScreenshot,
-              mimeType: 'image/png'
             }
           ]
         };
@@ -334,18 +326,14 @@ async function handleToolCall(toolName, args) {
         // Wait for any changes
         await page.waitForTimeout(2000);
         
-        const clickScreenshot = await page.screenshot({ encoding: 'base64' });
+        // Remove screenshot capture for now
+        // const clickScreenshot = await page.screenshot({ encoding: 'base64' });
         
         return {
           content: [
             {
               type: 'text',
               text: `Successfully clicked element: ${args.selector}`
-            },
-            {
-              type: 'image',
-              data: clickScreenshot,
-              mimeType: 'image/png'
             }
           ]
         };
