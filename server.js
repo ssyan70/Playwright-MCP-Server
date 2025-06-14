@@ -1,431 +1,279 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
+import http from 'http';
 
-class PlaywrightMCPServer {
-  constructor() {
-    this.server = new Server(
+const server = new Server(
+  {
+    name: 'playwright-mcp-server',
+    version: '0.1.0',
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
+// Add HTTP server for Render health checks
+const PORT = process.env.PORT || 10000;
+const httpServer = http.createServer((req, res) => {
+  if (req.url === '/health' || req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'healthy', tools: 4 }));
+  } else {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`HTTP Health server running on port ${PORT}`);
+});
+
+// List available tools
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
       {
-        name: 'playwright-mcp-server',
-        version: '1.0.0',
+        name: 'navigate_to_url',
+        description: 'Navigate to a specific URL and take a screenshot',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              description: 'The URL to navigate to',
+            },
+          },
+          required: ['url'],
+        },
       },
       {
-        capabilities: {
-          tools: {},
+        name: 'fill_form',
+        description: 'Fill out form fields on a webpage',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              description: 'The URL of the page with the form',
+            },
+            fields: {
+              type: 'array',
+              description: 'Array of form fields to fill',
+            },
+          },
+          required: ['url', 'fields'],
         },
-      }
-    );
+      },
+      {
+        name: 'click_element',
+        description: 'Click on an element on a webpage',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              description: 'The URL of the page',
+            },
+            selector: {
+              type: 'string',
+              description: 'CSS selector for the element to click',
+            },
+          },
+          required: ['url', 'selector'],
+        },
+      },
+      {
+        name: 'get_page_content',
+        description: 'Get the HTML content and form structure of a webpage',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              description: 'The URL of the page to inspect',
+            },
+            selector: {
+              type: 'string',
+              description: 'Optional CSS selector to get content from specific element only',
+            },
+            includeFormStructure: {
+              type: 'boolean',
+              description: 'Whether to include detailed form field information',
+              default: true,
+            },
+          },
+          required: ['url'],
+        },
+      },
+    ],
+  };
+});
 
-    this.setupErrorHandling();
-    this.setupTools();
-  }
+// Handle tool execution
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
 
-  setupErrorHandling() {
-    this.server.onerror = (error) => {
-      console.error('[MCP Error]', error);
+  try {
+    let result;
+    switch (name) {
+      case 'navigate_to_url':
+        result = await this.handleNavigateToUrl(args);
+        break;
+      case 'fill_form':
+        result = await this.handleFillForm(args);
+        break;
+      case 'click_element':
+        result = await this.handleClickElement(args);
+        break;
+      case 'get_page_content':
+        result = await this.handleGetPageContent(args);
+        break;
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
-
-    process.on('SIGINT', async () => {
-      await this.server.close();
-      process.exit(0);
-    });
+  } catch (error) {
+    return {
+      content: [{ type: 'text', text: `Error: ${error.message}` }],
+      isError: true,
+    };
   }
+});
 
-  setupTools() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: [
-          {
-            name: 'navigate_to_url',
-            description: 'Navigate to a specific URL',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                url: {
-                  type: 'string',
-                  description: 'The URL to navigate to',
-                },
-              },
-              required: ['url'],
-            },
-          },
-          {
-            name: 'fill_form',
-            description: 'Fill out a form on a webpage with multiple fields',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                url: {
-                  type: 'string',
-                  description: 'The URL of the page containing the form',
-                },
-                fields: {
-                  type: 'array',
-                  description: 'Array of field objects to fill',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      selector: {
-                        type: 'string',
-                        description: 'CSS selector for the form field',
-                      },
-                      value: {
-                        type: 'string',
-                        description: 'Value to enter in the field',
-                      },
-                      action: {
-                        type: 'string',
-                        description: 'Action to perform (fill, select, check)',
-                        enum: ['fill', 'select', 'check'],
-                      },
-                    },
-                    required: ['selector', 'value', 'action'],
-                  },
-                },
-              },
-              required: ['url', 'fields'],
-            },
-          },
-          {
-            name: 'click_element',
-            description: 'Click on an element on a webpage',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                url: {
-                  type: 'string',
-                  description: 'The URL of the page containing the element',
-                },
-                selector: {
-                  type: 'string',
-                  description: 'CSS selector for the element to click',
-                },
-              },
-              required: ['url', 'selector'],
-            },
-          },
-          {
-            name: 'get_page_content',
-            description: 'Get the HTML content and form structure of a webpage',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                url: {
-                  type: 'string',
-                  description: 'The URL of the page to inspect',
-                },
-                selector: {
-                  type: 'string',
-                  description: 'Optional CSS selector to get content from specific element only',
-                },
-                includeFormStructure: {
-                  type: 'boolean',
-                  description: 'Whether to include detailed form field information',
-                  default: true,
-                },
-              },
-              required: ['url'],
-            },
-          },
-        ],
-      };
-    });
-
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-
-      try {
-        let result;
-        switch (name) {
-          case 'navigate_to_url':
-            result = await this.handleNavigateToUrl(args);
-            break;
-          case 'fill_form':
-            result = await this.handleFillForm(args);
-            break;
-          case 'click_element':
-            result = await this.handleClickElement(args);
-            break;
-          case 'get_page_content':
-            result = await this.handleGetPageContent(args);
-            break;
-          default:
-            throw new Error(`Unknown tool: ${name}`);
-        }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: result,
-            },
-          ],
-        };
-      } catch (error) {
-        console.error(`Tool call error for ${name}:`, error.message);
-        throw error;
-      }
-    });
-  }
-
-  async createBrowserInstance() {
-    console.log('Creating fresh browser instance...');
+// Tool implementation methods
+server.handleNavigateToUrl = async (args) => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  
+  try {
+    await page.goto(args.url);
+    const screenshot = await page.screenshot({ fullPage: true });
+    await browser.close();
     
-    // Set browsers path for Render deployment
-    if (process.env.RENDER) {
-      process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/render/project/playwright';
-      console.log('PLAYWRIGHT_BROWSERS_PATH set to:', process.env.PLAYWRIGHT_BROWSERS_PATH);
-    }
+    return {
+      success: true,
+      message: `Successfully navigated to ${args.url}`,
+      screenshot: screenshot.toString('base64'),
+    };
+  } catch (error) {
+    await browser.close();
+    throw error;
+  }
+};
 
-    // Check if browsers exist
-    try {
-      const fs = await import('fs');
-      const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || '';
-      
-      if (browsersPath && fs.existsSync(browsersPath)) {
-        console.log('Browsers found at:', browsersPath);
-      } else if (process.env.RENDER) {
-        console.log('Browsers not found, installing Playwright browsers...');
-        const { execSync } = await import('child_process');
-        
-        try {
-          execSync('npx playwright install chromium', { stdio: 'inherit' });
-          console.log('Playwright browsers installed successfully');
-        } catch (installError) {
-          console.error('Failed to install browsers:', installError.message);
-          throw installError;
-        }
-      }
-    } catch (error) {
-      console.log('Browser check failed:', error.message);
-    }
-
-    console.log('Attempting to launch browser...');
-    const browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-      ],
-    });
+server.handleFillForm = async (args) => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  
+  try {
+    await page.goto(args.url);
     
-    console.log('Browser launched successfully!');
-    return browser;
-  }
-
-  async handleNavigateToUrl(args) {
-    const { url } = args;
-    const browser = await this.createBrowserInstance();
-    
-    try {
-      const context = await browser.newContext();
-      console.log('Browser context created for navigate_to_url');
-      
-      const page = await context.newPage();
-      console.log(`Navigating to: ${url}`);
-      
-      await page.goto(url, { waitUntil: 'networkidle' });
-      
-      console.log('Closing context...');
-      await context.close();
-      console.log('Context closed successfully');
-      
-      return `Successfully navigated to ${url}`;
-    } catch (error) {
-      console.log('Closing context...');
-      throw error;
-    } finally {
-      console.log('Closing browser...');
-      await browser.close();
-      console.log('Browser closed successfully');
+    for (const field of args.fields) {
+      await page.fill(field.selector, field.value);
     }
-  }
-
-  async handleFillForm(args) {
-    const { url, fields } = args;
-    const browser = await this.createBrowserInstance();
     
-    try {
-      const context = await browser.newContext();
-      console.log('Browser context created for fill_form');
-      
-      const page = await context.newPage();
-      console.log(`Filling form at: ${url}`);
-      
-      await page.goto(url, { waitUntil: 'networkidle' });
-      
-      const results = [];
-      
-      for (const field of fields) {
-        const { selector, value, action } = field;
-        console.log(`Processing field: ${selector} = ${value} (${action})`);
-        
-        try {
-          await page.waitForSelector(selector, { timeout: 5000 });
-          
-          switch (action) {
-            case 'fill':
-              await page.fill(selector, value);
-              break;
-            case 'select':
-              await page.selectOption(selector, value);
-              break;
-            case 'check':
-              if (value.toLowerCase() === 'true' || value === '1') {
-                await page.check(selector);
-              } else {
-                await page.uncheck(selector);
-              }
-              break;
-            default:
-              throw new Error(`Unknown action: ${action}`);
-          }
-          
-          console.log(`Successfully processed: ${selector}`);
-          results.push({ selector, value, action, status: 'success' });
-        } catch (fieldError) {
-          console.log(`Failed to process field ${selector}:`, fieldError.message);
-          results.push({ selector, value, action, status: 'failed', error: fieldError.message });
-        }
-      }
-      
-      console.log('Closing context...');
-      await context.close();
-      console.log('Context closed successfully');
-      
-      return `Form filling completed. Results: ${JSON.stringify(results)}`;
-    } catch (error) {
-      console.log('Closing context...');
-      throw error;
-    } finally {
-      console.log('Closing browser...');
-      await browser.close();
-      console.log('Browser closed successfully');
-    }
-  }
-
-  async handleClickElement(args) {
-    const { url, selector } = args;
-    const browser = await this.createBrowserInstance();
+    const screenshot = await page.screenshot({ fullPage: true });
+    await browser.close();
     
-    try {
-      const context = await browser.newContext();
-      console.log('Browser context created for click_element');
-      
-      const page = await context.newPage();
-      console.log(`Clicking element at: ${url}`);
-      
-      await page.goto(url, { waitUntil: 'networkidle' });
-      await page.waitForSelector(selector, { timeout: 10000 });
-      await page.click(selector);
-      
-      console.log('Closing context...');
-      await context.close();
-      console.log('Context closed successfully');
-      
-      return `Successfully clicked element: ${selector}`;
-    } catch (error) {
-      console.log('Closing context...');
-      throw error;
-    } finally {
-      console.log('Closing browser...');
-      await browser.close();
-      console.log('Browser closed successfully');
-    }
+    return {
+      success: true,
+      message: `Successfully filled ${args.fields.length} form fields`,
+      screenshot: screenshot.toString('base64'),
+    };
+  } catch (error) {
+    await browser.close();
+    throw error;
   }
+};
 
-  async handleGetPageContent(args) {
-    const { url, selector, includeFormStructure = true } = args;
-    const browser = await this.createBrowserInstance();
+server.handleClickElement = async (args) => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  
+  try {
+    await page.goto(args.url);
+    await page.click(args.selector);
     
-    try {
-      const context = await browser.newContext();
-      console.log('Browser context created for get_page_content');
-      
-      const page = await context.newPage();
-      console.log(`Getting content from: ${url}`);
-      
-      await page.goto(url, { waitUntil: 'networkidle' });
-      
-      let content = '';
-      let formInfo = {};
-      
-      // Get HTML content
-      if (selector) {
-        console.log(`Getting content for selector: ${selector}`);
-        await page.waitForSelector(selector, { timeout: 5000 });
-        content = await page.innerHTML(selector);
-      } else {
-        console.log('Getting full page content');
-        content = await page.content();
-      }
-      
-      // Get form structure if requested
-      if (includeFormStructure) {
-        console.log('Analyzing form structure...');
-        formInfo = await page.evaluate(() => {
-          const forms = Array.from(document.querySelectorAll('form'));
-          return forms.map((form, formIndex) => {
-            const inputs = Array.from(form.querySelectorAll('input, select, textarea, button'));
-            return {
-              formIndex,
-              action: form.action || 'No action specified',
-              method: form.method || 'GET',
-              fields: inputs.map(input => ({
-                type: input.type || input.tagName.toLowerCase(),
-                name: input.name || '',
-                id: input.id || '',
-                placeholder: input.placeholder || '',
-                value: input.value || '',
-                required: input.required || false,
-                selector: input.name ? `input[name='${input.name}']` : 
-                         input.id ? `#${input.id}` : 
-                         `${input.tagName.toLowerCase()}[type='${input.type}']`,
-                tagName: input.tagName.toLowerCase(),
-                className: input.className || ''
-              }))
-            };
-          });
-        });
-      }
-      
-      console.log('Closing context...');
-      await context.close();
-      console.log('Context closed successfully');
-      
-      const result = {
-        url,
-        title: await page.title(),
-        contentLength: content.length,
-        formsFound: formInfo.length || 0,
-        forms: formInfo,
-        htmlContent: content.length > 5000 ? content.substring(0, 5000) + '...[truncated]' : content
-      };
-      
-      return `Page content analysis for ${url}:\n\nTitle: ${result.title}\nForms found: ${result.formsFound}\n\nForm Structure:\n${JSON.stringify(result.forms, null, 2)}\n\nHTML Content (first 5000 chars):\n${result.htmlContent}`;
-      
-    } catch (error) {
-      console.log('Closing context...');
-      throw error;
-    } finally {
-      console.log('Closing browser...');
-      await browser.close();
-      console.log('Browser closed successfully');
-    }
+    const screenshot = await page.screenshot({ fullPage: true });
+    await browser.close();
+    
+    return {
+      success: true,
+      message: `Successfully clicked element: ${args.selector}`,
+      screenshot: screenshot.toString('base64'),
+    };
+  } catch (error) {
+    await browser.close();
+    throw error;
   }
+};
 
-  async run() {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.log('Playwright MCP Server running on port 10000');
+server.handleGetPageContent = async (args) => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  
+  try {
+    await page.goto(args.url);
+    
+    let content;
+    if (args.selector) {
+      const element = await page.$(args.selector);
+      content = element ? await element.innerHTML() : null;
+    } else {
+      content = await page.content();
+    }
+    
+    let formStructure = null;
+    if (args.includeFormStructure !== false) {
+      const forms = await page.$$eval('form', forms => 
+        forms.map((form, index) => ({
+          formIndex: index,
+          action: form.action || '',
+          method: form.method || 'GET',
+          fields: Array.from(form.querySelectorAll('input, textarea, select')).map(field => ({
+            name: field.name || '',
+            id: field.id || '',
+            type: field.type || 'text',
+            placeholder: field.placeholder || '',
+            required: field.required || false,
+            value: field.value || '',
+            selector: field.id ? `#${field.id}` : field.name ? `[name="${field.name}"]` : '',
+          }))
+        }))
+      );
+      formStructure = forms;
+    }
+    
+    const title = await page.title();
+    await browser.close();
+    
+    return {
+      success: true,
+      url: args.url,
+      title: title,
+      content: content,
+      formStructure: formStructure,
+    };
+  } catch (error) {
+    await browser.close();
+    throw error;
   }
+};
+
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.log('Playwright MCP Server running');
 }
 
-const server = new PlaywrightMCPServer();
-server.run().catch(console.error);
+main().catch(console.error);
