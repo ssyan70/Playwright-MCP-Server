@@ -13,6 +13,28 @@ let browser = null;
 // Initialize browser with Render-optimized settings
 async function initBrowser() {
   if (!browser) {
+    // Set the browsers path to a persistent directory
+    const browsersPath = '/opt/render/project/playwright';
+    process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
+    
+    console.log('PLAYWRIGHT_BROWSERS_PATH set to:', browsersPath);
+    
+    // Check if browsers exist, if not install them
+    const fs = await import('fs');
+    if (!fs.existsSync(browsersPath)) {
+      console.log('Browsers not found, installing Playwright browsers...');
+      try {
+        const { execSync } = await import('child_process');
+        execSync('npx playwright install chromium', { stdio: 'inherit' });
+        console.log('Playwright browsers installed successfully');
+      } catch (installError) {
+        console.log('Failed to install browsers:', installError.message);
+        throw new Error('Failed to install Playwright browsers');
+      }
+    } else {
+      console.log('Browsers found at:', browsersPath);
+    }
+    
     const launchOptions = { 
       headless: true,
       args: [
@@ -29,109 +51,15 @@ async function initBrowser() {
     };
     
     try {
-      // Set the PLAYWRIGHT_BROWSERS_PATH if not already set
-      if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
-        process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/render/.cache/ms-playwright';
-      }
-      
       console.log('Attempting to launch browser...');
-      console.log('PLAYWRIGHT_BROWSERS_PATH:', process.env.PLAYWRIGHT_BROWSERS_PATH);
       
-      // Try regular chromium launch
+      // Try regular chromium launch (should work now with proper path)
       browser = await chromium.launch(launchOptions);
       console.log('Browser launched successfully!');
       
     } catch (error) {
       console.log('Browser launch failed:', error.message);
-      
-      // Fallback: Try specific known paths based on the logs
-      const knownPaths = [
-        // Headless shell paths
-        '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/headless_shell',
-        '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/chrome-headless-shell',
-        '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/chrome-linux/headless_shell',
-        
-        // Regular chromium paths
-        '/opt/render/.cache/ms-playwright/chromium-1178/chrome',
-        '/opt/render/.cache/ms-playwright/chromium-1178/chromium',
-        '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chrome',
-        '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chromium'
-      ];
-      
-      console.log('Trying known executable paths...');
-      
-      // Import fs dynamically
-      const fs = await import('fs');
-      
-      for (const executablePath of knownPaths) {
-        try {
-          console.log(`Testing path: ${executablePath}`);
-          
-          // Check if file exists
-          if (fs.existsSync(executablePath)) {
-            console.log(`Found executable at: ${executablePath}`);
-            browser = await chromium.launch({ ...launchOptions, executablePath });
-            console.log('Browser launched successfully with found executable!');
-            break;
-          } else {
-            console.log(`File does not exist: ${executablePath}`);
-          }
-        } catch (execError) {
-          console.log(`Failed with ${executablePath}: ${execError.message}`);
-        }
-      }
-      
-      if (!browser) {
-        // Last resort: search the filesystem
-        console.log('Searching filesystem for executables...');
-        const path = await import('path');
-        
-        function findExecutables(dir, depth = 0) {
-          if (depth > 3) return []; // Limit search depth
-          
-          try {
-            const items = fs.readdirSync(dir);
-            let found = [];
-            
-            for (const item of items) {
-              const fullPath = path.join(dir, item);
-              try {
-                const stat = fs.statSync(fullPath);
-                
-                if (stat.isDirectory()) {
-                  found = found.concat(findExecutables(fullPath, depth + 1));
-                } else if (stat.isFile() && (item === 'chrome' || item === 'chromium' || item === 'headless_shell' || item === 'chrome-headless-shell')) {
-                  found.push(fullPath);
-                }
-              } catch (statError) {
-                // Skip files we can't stat
-              }
-            }
-            return found;
-          } catch (err) {
-            console.log(`Cannot read directory ${dir}: ${err.message}`);
-            return [];
-          }
-        }
-        
-        const foundExecutables = findExecutables('/opt/render/.cache/ms-playwright');
-        console.log('Found executables:', foundExecutables);
-        
-        for (const execPath of foundExecutables) {
-          try {
-            console.log(`Trying found executable: ${execPath}`);
-            browser = await chromium.launch({ ...launchOptions, executablePath: execPath });
-            console.log('Browser launched successfully with searched executable!');
-            break;
-          } catch (execError) {
-            console.log(`Failed with found executable ${execPath}: ${execError.message}`);
-          }
-        }
-        
-        if (!browser) {
-          throw new Error('Failed to launch browser with any available executable. Found executables: ' + foundExecutables.join(', '));
-        }
-      }
+      throw new Error('Failed to launch browser: ' + error.message);
     }
   }
   return browser;
