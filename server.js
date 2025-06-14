@@ -44,6 +44,21 @@ const toolsList = {
       }
     },
     {
+      name: 'wait_for_content',
+      description: 'Wait for dynamic content to load on the page',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          seconds: {
+            type: 'number',
+            description: 'Number of seconds to wait (default: 3)',
+            default: 3
+          }
+        },
+        required: []
+      }
+    },
+    {
       name: 'fill_form',
       description: 'Fill out a form field on the current page',
       inputSchema: {
@@ -98,12 +113,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     
     switch (name) {
       case 'navigate_to_url':
-        await page.goto(args.url);
+      case 'navigate_to_url':
+        await page.goto(args.url, { waitUntil: 'networkidle' });
+        // Wait for dynamic content to load
+        await page.waitForTimeout(3000);
         return {
           content: [
             {
               type: 'text',
-              text: `Successfully navigated to ${args.url}`
+              text: `Successfully navigated to ${args.url} and waited for content to load`
+            }
+          ]
+        };
+        
+      case 'wait_for_content':
+        const waitTime = args.seconds || 3;
+        await page.waitForTimeout(waitTime * 1000);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Waited ${waitTime} seconds for content to load`
+            }
+          ]
+        };
+        
+      case 'wait_for_content':
+        const waitTime = args.seconds || 3;
+        await page.waitForTimeout(waitTime * 1000);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Waited ${waitTime} seconds for content to load`
             }
           ]
         };
