@@ -60,12 +60,15 @@ async function initBrowser() {
       
       console.log('Trying known executable paths...');
       
+      // Import fs dynamically
+      const fs = await import('fs');
+      
       for (const executablePath of knownPaths) {
         try {
           console.log(`Testing path: ${executablePath}`);
           
-          // Check if file exists using imported fs functions
-          if (existsSync(executablePath)) {
+          // Check if file exists
+          if (fs.existsSync(executablePath)) {
             console.log(`Found executable at: ${executablePath}`);
             browser = await chromium.launch({ ...launchOptions, executablePath });
             console.log('Browser launched successfully with found executable!');
@@ -81,18 +84,19 @@ async function initBrowser() {
       if (!browser) {
         // Last resort: search the filesystem
         console.log('Searching filesystem for executables...');
+        const path = await import('path');
         
         function findExecutables(dir, depth = 0) {
           if (depth > 3) return []; // Limit search depth
           
           try {
-            const items = readdirSync(dir);
+            const items = fs.readdirSync(dir);
             let found = [];
             
             for (const item of items) {
-              const fullPath = join(dir, item);
+              const fullPath = path.join(dir, item);
               try {
-                const stat = statSync(fullPath);
+                const stat = fs.statSync(fullPath);
                 
                 if (stat.isDirectory()) {
                   found = found.concat(findExecutables(fullPath, depth + 1));
