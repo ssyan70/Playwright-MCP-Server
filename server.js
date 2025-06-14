@@ -28,50 +28,65 @@ async function initBrowser() {
       ]
     };
     
-    // Try different executable paths based on actual Render structure
-    const possiblePaths = [
-      '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chrome',
-      '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chromium',
-      '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/chrome-headless-shell-linux/chrome-headless-shell',
-      '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/chrome-linux/chrome',
-      '/opt/render/.cache/ms-playwright/chromium-1178/chromium-linux/chrome',
-      '/opt/render/.cache/ms-playwright/chromium-1178/chromium-linux/chromium'
-    ];
-    
-    // First try without specifying executable path (let Playwright find it)
     try {
-      browser = await chromium.launch(launchOptions);
-      console.log('Browser launched successfully with default executable');
-    } catch (error) {
-      console.log('Default launch failed, trying specific paths...');
-      console.log('Default error:', error.message);
-      
-      // Try each possible path
-      for (const path of possiblePaths) {
-        try {
-          console.log(`Trying executable path: ${path}`);
-          browser = await chromium.launch({ ...launchOptions, executablePath: path });
-          console.log(`Browser launched successfully with path: ${path}`);
-          break;
-        } catch (pathError) {
-          console.log(`Failed with path ${path}: ${pathError.message}`);
-        }
+      // Set the PLAYWRIGHT_BROWSERS_PATH if not already set
+      if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
+        process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/render/.cache/ms-playwright';
       }
-    }
-    
-    if (!browser) {
-      // Try using the headless shell as a last resort
-      try {
-        console.log('Trying chromium headless shell...');
-        const { chromium: headlessChromium } = require('playwright');
-        browser = await headlessChromium.launch({
-          ...launchOptions,
-          executablePath: '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/chrome-headless-shell'
-        });
-        console.log('Browser launched successfully with headless shell');
-      } catch (headlessError) {
-        console.log('Headless shell failed:', headlessError.message);
-        throw new Error('Failed to launch browser with any available path');
+      
+      console.log('Attempting to launch browser...');
+      console.log('PLAYWRIGHT_BROWSERS_PATH:', process.env.PLAYWRIGHT_BROWSERS_PATH);
+      
+      // Try regular chromium launch
+      browser = await chromium.launch(launchOptions);
+      console.log('Browser launched successfully!');
+      
+    } catch (error) {
+      console.log('Browser launch failed:', error.message);
+      
+      // Fallback: Try launching with specific executable paths we know exist
+      const fs = require('fs');
+      const path = require('path');
+      
+      const basePath = '/opt/render/.cache/ms-playwright';
+      
+      // Function to recursively find Chrome executable
+      function findChromeExecutable(dir) {
+        try {
+          const items = fs.readdirSync(dir);
+          for (const item of items) {
+            const fullPath = path.join(dir, item);
+            const stat = fs.statSync(fullPath);
+            
+            if (stat.isDirectory()) {
+              const result = findChromeExecutable(fullPath);
+              if (result) return result;
+            } else if (item === 'chrome' || item === 'chromium' || item === 'headless_shell') {
+              console.log('Found executable:', fullPath);
+              return fullPath;
+            }
+          }
+        } catch (err) {
+          // Ignore errors and continue searching
+        }
+        return null;
+      }
+      
+      console.log('Searching for Chrome executable...');
+      const executablePath = findChromeExecutable(basePath);
+      
+      if (executablePath) {
+        try {
+          console.log('Trying found executable:', executablePath);
+          browser = await chromium.launch({ ...launchOptions, executablePath });
+          console.log('Browser launched successfully with found executable!');
+        } catch (execError) {
+          console.log('Failed with found executable:', execError.message);
+          throw new Error('Failed to launch browser with any available executable');
+        }
+      } else {
+        console.log('No Chrome executable found in', basePath);
+        throw new Error('No Chrome executable found');
       }
     }
   }
