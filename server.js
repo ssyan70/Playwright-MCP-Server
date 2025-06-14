@@ -292,6 +292,8 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         console.log('Received MCP request:', body);
+        console.log('Request URL:', req.url);
+        console.log('Request method:', req.method);
         const request = JSON.parse(body);
         
         // Handle MCP JSON-RPC requests
@@ -353,6 +355,7 @@ const httpServer = http.createServer(async (req, res) => {
           
           res.writeHead(200);
           res.end(JSON.stringify(response));
+          console.log('Sent response:', JSON.stringify(response));
         } else {
           res.writeHead(400);
           res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
