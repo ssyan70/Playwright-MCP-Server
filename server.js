@@ -7,7 +7,9 @@ import {
 import { chromium } from 'playwright';
 import http from 'http';
 
-// Create MCP Server
+const PORT = process.env.PORT || 10000;
+
+// Create MCP Server instance
 const server = new Server(
   {
     name: 'playwright-mcp-server',
@@ -19,27 +21,6 @@ const server = new Server(
     },
   }
 );
-
-// HTTP Server for Render health checks
-const PORT = process.env.PORT || 10000;
-const httpServer = http.createServer((req, res) => {
-  res.writeHead(200, { 
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  });
-  res.end(JSON.stringify({ 
-    status: 'healthy', 
-    service: 'playwright-mcp-server',
-    tools: ['navigate_to_url', 'fill_form', 'click_element', 'get_page_content'],
-    timestamp: new Date().toISOString()
-  }));
-});
-
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`HTTP Health server running on port ${PORT}`);
-});
 
 // List available tools for MCP
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -276,13 +257,103 @@ async function handleGetPageContent(args) {
   }
 }
 
-// Start MCP Server
-async function startMCP() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.log('Playwright MCP Server connected via stdio');
-}
+// HTTP Server to handle MCP over HTTP
+const httpServer = http.createServer(async (req, res) => {
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Content-Type', 'application/json');
 
-// Start everything
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+
+  if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
+    // Health check endpoint
+    res.writeHead(200);
+    res.end(JSON.stringify({ 
+      status: 'healthy', 
+      service: 'playwright-mcp-server',
+      tools: ['navigate_to_url', 'fill_form', 'click_element', 'get_page_content'],
+      timestamp: new Date().toISOString()
+    }));
+    return;
+  }
+
+  if (req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+    });
+
+    req.on('end', async () => {
+      try {
+        const request = JSON.parse(body);
+        
+        // Handle MCP JSON-RPC requests
+        if (request.jsonrpc === '2.0') {
+          let response;
+          
+          if (request.method === 'tools/list') {
+            const toolsResponse = await server.requestHandlers.get(ListToolsRequestSchema.name)({
+              params: {},
+              method: 'tools/list',
+              id: request.id
+            });
+            
+            response = {
+              jsonrpc: '2.0',
+              id: request.id,
+              result: toolsResponse
+            };
+          } else if (request.method === 'tools/call') {
+            const callResponse = await server.requestHandlers.get(CallToolRequestSchema.name)({
+              params: request.params,
+              method: 'tools/call',
+              id: request.id
+            });
+            
+            response = {
+              jsonrpc: '2.0',
+              id: request.id,
+              result: callResponse
+            };
+          } else {
+            response = {
+              jsonrpc: '2.0',
+              id: request.id,
+              error: {
+                code: -32601,
+                message: 'Method not found'
+              }
+            };
+          }
+          
+          res.writeHead(200);
+          res.end(JSON.stringify(response));
+        } else {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
+        }
+      } catch (error) {
+        console.error('Error processing request:', error);
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: 'Internal server error', details: error.message }));
+      }
+    });
+  } else {
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: 'Not found' }));
+  }
+});
+
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`Playwright MCP Server running on port ${PORT}`);
+  console.log(`HTTP Health server running on port ${PORT}`);
+  console.log(`MCP over HTTP available at: https://playwright-mcp-server.onrender.com`);
+});
+
 console.log('Playwright MCP Server running on port 10000');
-startMCP().catch(console.error);
