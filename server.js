@@ -5,7 +5,6 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
-import http from 'http';
 
 const server = new Server(
   {
@@ -18,22 +17,6 @@ const server = new Server(
     },
   }
 );
-
-// Add HTTP server for Render health checks
-const PORT = process.env.PORT || 10000;
-const httpServer = http.createServer((req, res) => {
-  if (req.url === '/health' || req.url === '/') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'healthy', tools: 4 }));
-  } else {
-    res.writeHead(404);
-    res.end('Not found');
-  }
-});
-
-httpServer.listen(PORT, () => {
-  console.log(`HTTP Health server running on port ${PORT}`);
-});
 
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -124,16 +107,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let result;
     switch (name) {
       case 'navigate_to_url':
-        result = await this.handleNavigateToUrl(args);
+        result = await handleNavigateToUrl(args);
         break;
       case 'fill_form':
-        result = await this.handleFillForm(args);
+        result = await handleFillForm(args);
         break;
       case 'click_element':
-        result = await this.handleClickElement(args);
+        result = await handleClickElement(args);
         break;
       case 'get_page_content':
-        result = await this.handleGetPageContent(args);
+        result = await handleGetPageContent(args);
         break;
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -150,8 +133,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Tool implementation methods
-server.handleNavigateToUrl = async (args) => {
+// Tool implementation functions
+async function handleNavigateToUrl(args) {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   
@@ -169,9 +152,9 @@ server.handleNavigateToUrl = async (args) => {
     await browser.close();
     throw error;
   }
-};
+}
 
-server.handleFillForm = async (args) => {
+async function handleFillForm(args) {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   
@@ -194,9 +177,9 @@ server.handleFillForm = async (args) => {
     await browser.close();
     throw error;
   }
-};
+}
 
-server.handleClickElement = async (args) => {
+async function handleClickElement(args) {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   
@@ -216,9 +199,9 @@ server.handleClickElement = async (args) => {
     await browser.close();
     throw error;
   }
-};
+}
 
-server.handleGetPageContent = async (args) => {
+async function handleGetPageContent(args) {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   
@@ -268,12 +251,12 @@ server.handleGetPageContent = async (args) => {
     await browser.close();
     throw error;
   }
-};
+}
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.log('Playwright MCP Server running');
+  console.log('Playwright MCP Server running on port 10000');
 }
 
 main().catch(console.error);
