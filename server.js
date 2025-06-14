@@ -1,14 +1,15 @@
-import express from 'express';
-import cors from 'cors';
 import { chromium } from 'playwright';
+import express from 'express';
 
 const app = express();
-const PORT = process.env.PORT || 10000;
-
-app.use(cors());
 app.use(express.json());
 
 let browser = null;
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
 
 // Initialize browser with Render-optimized settings
 async function initBrowser() {
@@ -65,202 +66,273 @@ async function initBrowser() {
   return browser;
 }
 
-// Form filling endpoint
-app.post('/fill-form', async (req, res) => {
-  const { url, formData, waitForSelector, submitButton } = req.body;
+// MCP Protocol Implementation
+app.post('/', async (req, res) => {
+  const { jsonrpc, method, params, id } = req.body;
+  
+  console.log('MCP Request:', { method, params });
   
   try {
-    await initBrowser();
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    let result;
     
-    // Navigate to the page
-    await page.goto(url);
-    
-    // Wait for the form to load
-    if (waitForSelector) {
-      await page.waitForSelector(waitForSelector);
-    }
-    
-    // Fill form fields
-    for (const [selector, value] of Object.entries(formData)) {
-      await page.fill(selector, value);
-    }
-    
-    // Submit form if button specified
-    if (submitButton) {
-      await page.click(submitButton);
-      await page.waitForLoadState('networkidle');
-    }
-    
-    // Get the result page content
-    const content = await page.content();
-    const url_after = page.url();
-    
-    await context.close();
-    
-    res.json({
-      success: true,
-      content,
-      url: url_after,
-      message: 'Form filled successfully'
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Smart form filling with element detection
-app.post('/smart-fill-form', async (req, res) => {
-  const { url, formFields, submitText = 'Submit' } = req.body;
-  
-  try {
-    await initBrowser();
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    
-    await page.goto(url);
-    await page.waitForLoadState('networkidle');
-    
-    // Smart field detection and filling
-    for (const field of formFields) {
-      const { label, value, type = 'text' } = field;
-      
-      let selector = null;
-      
-      // Try different selectors based on label
-      const possibleSelectors = [
-        `input[placeholder*="${label}" i]`,
-        `input[name*="${label.toLowerCase()}"]`,
-        `input[id*="${label.toLowerCase()}"]`,
-        `//label[contains(text(), "${label}")]/following-sibling::input`,
-        `//label[contains(text(), "${label}")]/parent::*/input`
-      ];
-      
-      for (const sel of possibleSelectors) {
-        try {
-          if (sel.startsWith('//')) {
-            const element = await page.locator(`xpath=${sel}`).first();
-            if (await element.isVisible()) {
-              await element.fill(value);
-              break;
-            }
-          } else {
-            const element = page.locator(sel).first();
-            if (await element.isVisible()) {
-              await element.fill(value);
-              break;
-            }
+    switch (method) {
+      case 'initialize':
+        result = {
+          protocolVersion: '2024-11-05',
+          capabilities: {
+            tools: {},
+            resources: {}
+          },
+          serverInfo: {
+            name: 'playwright-mcp-server',
+            version: '1.0.0'
           }
-        } catch (e) {
-          continue;
-        }
-      }
-    }
-    
-    // Find and click submit button
-    const submitSelectors = [
-      `button:has-text("${submitText}")`,
-      `input[type="submit"]`,
-      `button[type="submit"]`,
-      `//button[contains(text(), "${submitText}")]`
-    ];
-    
-    for (const sel of submitSelectors) {
-      try {
-        if (sel.startsWith('//')) {
-          await page.locator(`xpath=${sel}`).first().click();
-        } else {
-          await page.locator(sel).first().click();
-        }
+        };
         break;
-      } catch (e) {
-        continue;
-      }
+        
+      case 'tools/list':
+        result = {
+          tools: [
+            {
+              name: 'navigate_to_url',
+              description: 'Navigate to a specific URL and take a screenshot',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  url: {
+                    type: 'string',
+                    description: 'The URL to navigate to'
+                  }
+                },
+                required: ['url']
+              }
+            },
+            {
+              name: 'fill_form',
+              description: 'Fill out form fields on a webpage',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  url: {
+                    type: 'string',
+                    description: 'The URL of the page with the form'
+                  },
+                  fields: {
+                    type: 'array',
+                    description: 'Array of form fields to fill',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        selector: {
+                          type: 'string',
+                          description: 'CSS selector for the form field'
+                        },
+                        value: {
+                          type: 'string',
+                          description: 'Value to enter in the field'
+                        },
+                        action: {
+                          type: 'string',
+                          description: 'Action to perform: fill, select, check, click',
+                          enum: ['fill', 'select', 'check', 'click']
+                        }
+                      },
+                      required: ['selector', 'value']
+                    }
+                  }
+                },
+                required: ['url', 'fields']
+              }
+            },
+            {
+              name: 'click_element',
+              description: 'Click on an element on a webpage',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  url: {
+                    type: 'string',
+                    description: 'The URL of the page'
+                  },
+                  selector: {
+                    type: 'string',
+                    description: 'CSS selector for the element to click'
+                  }
+                },
+                required: ['url', 'selector']
+              }
+            }
+          ]
+        };
+        break;
+        
+      case 'tools/call':
+        const { name, arguments: args } = params;
+        result = await handleToolCall(name, args);
+        break;
+        
+      case 'resources/list':
+        result = {
+          resources: []
+        };
+        break;
+        
+      default:
+        throw new Error(`Unknown method: ${method}`);
     }
-    
-    await page.waitForLoadState('networkidle');
-    
-    const content = await page.content();
-    const finalUrl = page.url();
-    
-    await context.close();
     
     res.json({
-      success: true,
-      content,
-      url: finalUrl,
-      message: 'Smart form filling completed'
+      jsonrpc: '2.0',
+      id,
+      result
     });
     
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
+    console.error('MCP Error:', error);
+    res.json({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -1,
+        message: error.message
+      }
     });
   }
 });
 
-// Extract data from page
-app.post('/extract-data', async (req, res) => {
-  const { url, selectors } = req.body;
+// Handle tool calls
+async function handleToolCall(toolName, args) {
+  let context = null;
   
   try {
-    await initBrowser();
-    const context = await browser.newContext();
+    const browserInstance = await initBrowser();
+    context = await browserInstance.newContext();
     const page = await context.newPage();
     
-    await page.goto(url);
-    await page.waitForLoadState('networkidle');
-    
-    const results = {};
-    
-    for (const [key, selector] of Object.entries(selectors)) {
-      try {
-        const element = page.locator(selector);
-        results[key] = await element.textContent();
-      } catch (e) {
-        results[key] = null;
-      }
+    switch (toolName) {
+      case 'navigate_to_url':
+        await page.goto(args.url, { waitUntil: 'networkidle' });
+        const navScreenshot = await page.screenshot({ encoding: 'base64' });
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully navigated to ${args.url}`
+            },
+            {
+              type: 'image',
+              data: navScreenshot,
+              mimeType: 'image/png'
+            }
+          ]
+        };
+        
+      case 'fill_form':
+        await page.goto(args.url, { waitUntil: 'networkidle' });
+        
+        const results = [];
+        for (const field of args.fields) {
+          try {
+            const { selector, value, action = 'fill' } = field;
+            
+            await page.waitForSelector(selector, { timeout: 10000 });
+            
+            if (action === 'fill') {
+              await page.fill(selector, value);
+            } else if (action === 'select') {
+              await page.selectOption(selector, value);
+            } else if (action === 'check') {
+              await page.check(selector);
+            } else if (action === 'click') {
+              await page.click(selector);
+            }
+            
+            results.push({
+              selector,
+              value,
+              action,
+              status: 'success'
+            });
+          } catch (fieldError) {
+            results.push({
+              selector: field.selector,
+              value: field.value,
+              action: field.action || 'fill',
+              status: 'error',
+              error: fieldError.message
+            });
+          }
+        }
+        
+        const formScreenshot = await page.screenshot({ 
+          encoding: 'base64',
+          fullPage: true 
+        });
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Form filling completed. Results: ${JSON.stringify(results, null, 2)}`
+            },
+            {
+              type: 'image',
+              data: formScreenshot,
+              mimeType: 'image/png'
+            }
+          ]
+        };
+        
+      case 'click_element':
+        await page.goto(args.url, { waitUntil: 'networkidle' });
+        await page.waitForSelector(args.selector, { timeout: 10000 });
+        await page.click(args.selector);
+        
+        // Wait for any changes
+        await page.waitForTimeout(2000);
+        
+        const clickScreenshot = await page.screenshot({ encoding: 'base64' });
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully clicked element: ${args.selector}`
+            },
+            {
+              type: 'image',
+              data: clickScreenshot,
+              mimeType: 'image/png'
+            }
+          ]
+        };
+        
+      default:
+        throw new Error(`Unknown tool: ${toolName}`);
     }
     
-    await context.close();
-    
-    res.json({
-      success: true,
-      data: results
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+  } finally {
+    if (context) {
+      try {
+        await context.close();
+      } catch (closeError) {
+        console.log('Error closing context:', closeError.message);
+      }
+    }
   }
-});
+}
 
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', service: 'Playwright MCP Server' });
-});
-
-// Keep alive endpoint to prevent Render from sleeping
-app.get('/keepalive', (req, res) => {
-  res.json({ status: 'alive', timestamp: new Date().toISOString() });
-});
-
-// Cleanup on exit
-process.on('SIGINT', async () => {
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('Received SIGTERM, shutting down gracefully...');
   if (browser) {
     await browser.close();
   }
   process.exit(0);
 });
 
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Playwright MCP Server running on port ${PORT}`);
 });
