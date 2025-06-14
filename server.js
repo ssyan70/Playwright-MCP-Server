@@ -177,133 +177,133 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
-  // SSE endpoint
-  if (req.method === 'GET' && (req.url === '/sse' || req.url === '/')) {
-    // Set up SSE
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-      'X-Accel-Buffering': 'no' // Disable nginx buffering
-    });
+  // MCP HTTP Streamable endpoint - supports both GET and POST
+  if (req.url === '/mcp' || req.url === '/') {
+    if (req.method === 'GET') {
+      // GET request for SSE fallback (legacy compatibility)
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'X-Accel-Buffering': 'no'
+      });
 
-    // Generate connection ID
-    const connectionId = Math.random().toString(36).substring(7);
-    console.log(`New SSE connection: ${connectionId}`);
+      const connectionId = Math.random().toString(36).substring(7);
+      console.log(`New SSE connection: ${connectionId}`);
+      connections.set(connectionId, res);
 
-    // Store connection
-    connections.set(connectionId, res);
+      // Send endpoint event for legacy SSE clients
+      res.write(`data: /mcp\n\n`);
 
-    // Send simple endpoint event - just the path
-    res.write(`data: /mcp\n\n`);
-
-    // Keep connection alive with periodic heartbeats
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(`: heartbeat ${Date.now()}\n\n`);
-      } catch (error) {
-        console.log(`Heartbeat failed for connection ${connectionId}:`, error.message);
-        clearInterval(heartbeat);
+      req.on('close', () => {
+        console.log(`SSE connection closed: ${connectionId}`);
         connections.delete(connectionId);
-      }
-    }, 30000); // Every 30 seconds
+      });
 
-    // Handle connection close
-    req.on('close', () => {
-      console.log(`SSE connection closed: ${connectionId}`);
-      clearInterval(heartbeat);
-      connections.delete(connectionId);
-    });
+      return;
+    }
 
-    return;
-  }
+    if (req.method === 'POST') {
+      // HTTP Streamable transport - modern MCP
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
 
-  // MCP JSON-RPC endpoint
-  if (req.method === 'POST' && req.url === '/mcp') {
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk.toString();
-    });
-
-    req.on('end', async () => {
-      try {
-        console.log('Received MCP request:', body);
-        const request = JSON.parse(body);
-        
-        let response;
-        
-        // Handle MCP JSON-RPC requests
-        if (request.jsonrpc === '2.0') {
-          if (request.method === 'initialize') {
-            // Handle MCP initialization
-            response = {
-              jsonrpc: '2.0',
-              id: request.id,
-              result: {
-                protocolVersion: '2025-03-26',
-                capabilities: {
-                  tools: {},
-                  prompts: {},
-                  resources: {}
-                },
-                serverInfo: {
-                  name: 'playwright-mcp-server',
-                  version: '0.1.0'
-                }
-              }
-            };
-          } else if (request.method === 'tools/list') {
-            const toolsResponse = await server.requestHandlers.get(ListToolsRequestSchema.name)({
-              params: {},
-              method: 'tools/list',
-              id: request.id
-            });
-            
-            response = {
-              jsonrpc: '2.0',
-              id: request.id,
-              result: toolsResponse
-            };
-          } else if (request.method === 'tools/call') {
-            const toolResponse = await server.requestHandlers.get(CallToolRequestSchema.name)(request);
-            response = {
-              jsonrpc: '2.0',
-              id: request.id,
-              result: toolResponse
-            };
-          } else {
-            response = {
-              jsonrpc: '2.0',
-              id: request.id,
-              error: {
-                code: -32601,
-                message: `Method not found: ${request.method}`
-              }
-            };
-          }
+      req.on('end', async () => {
+        try {
+          console.log('Received MCP Streamable request:', body);
+          const request = JSON.parse(body);
           
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(response));
-          console.log('Sent response:', JSON.stringify(response));
-        } else {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
-        }
-      } catch (error) {
-        console.error('Error processing request:', error);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          jsonrpc: '2.0',
-          id: request?.id || null,
-          error: {
-            code: -32603,
-            message: `Internal error: ${error.message}`
+          let response;
+          let sessionId;
+          
+          // Handle MCP JSON-RPC requests
+          if (request.jsonrpc === '2.0') {
+            if (request.method === 'initialize') {
+              // Generate session ID for stateful sessions
+              sessionId = Math.random().toString(36).substring(2, 15);
+              
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                result: {
+                  protocolVersion: '2025-03-26',
+                  capabilities: {
+                    tools: {},
+                    prompts: {},
+                    resources: {}
+                  },
+                  serverInfo: {
+                    name: 'playwright-mcp-server',
+                    version: '0.1.0'
+                  }
+                }
+              };
+            } else if (request.method === 'tools/list') {
+              const toolsResponse = await server.requestHandlers.get(ListToolsRequestSchema.name)({
+                params: {},
+                method: 'tools/list',
+                id: request.id
+              });
+              
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                result: toolsResponse
+              };
+            } else if (request.method === 'tools/call') {
+              const toolResponse = await server.requestHandlers.get(CallToolRequestSchema.name)(request);
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                result: toolResponse
+              };
+            } else {
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                error: {
+                  code: -32601,
+                  message: `Method not found: ${request.method}`
+                }
+              };
+            }
+            
+            // Set headers for HTTP Streamable
+            const headers = {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            };
+            
+            // Add session ID if this is initialization
+            if (sessionId) {
+              headers['Mcp-Session-Id'] = sessionId;
+            }
+            
+            res.writeHead(200, headers);
+            res.end(JSON.stringify(response));
+            console.log('Sent MCP Streamable response:', JSON.stringify(response));
+          } else {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
           }
-        }));
-      }
-    });
-    return;
+        } catch (error) {
+          console.error('Error processing MCP Streamable request:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: request?.id || null,
+            error: {
+              code: -32603,
+              message: `Internal error: ${error.message}`
+            }
+          }));
+        }
+      });
+      return;
+    }
   }
 
   // 404 for other routes
@@ -324,6 +324,6 @@ process.on('SIGINT', async () => {
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
   console.log(`Playwright MCP Server running on port ${PORT}`);
-  console.log(`SSE endpoint: https://playwright-mcp-server.onrender.com/sse`);
-  console.log(`MCP endpoint: https://playwright-mcp-server.onrender.com/mcp`);
+  console.log(`HTTP Streamable endpoint: https://playwright-mcp-server.onrender.com/mcp`);
+  console.log(`Legacy SSE endpoint: https://playwright-mcp-server.onrender.com/mcp (GET)`);
 });
