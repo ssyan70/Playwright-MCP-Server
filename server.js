@@ -283,7 +283,7 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'POST') {
+  if (req.method === 'POST' && (req.url === '/messages' || req.url === '/mcp' || req.url === '/')) {
     let body = '';
     req.on('data', chunk => {
       body += chunk.toString();
@@ -291,6 +291,7 @@ const httpServer = http.createServer(async (req, res) => {
 
     req.on('end', async () => {
       try {
+        console.log('Received MCP request:', body);
         const request = JSON.parse(body);
         
         // Handle MCP JSON-RPC requests
