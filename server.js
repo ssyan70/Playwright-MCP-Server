@@ -1,269 +1,162 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
-import { chromium } from 'playwright';
-import http from 'http';
+const http = require('http');
+const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
+const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
+const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
+const { chromium } = require('playwright');
 
-const PORT = process.env.PORT || 10000;
-
-// Create MCP Server instance
-const server = new Server(
-  {
-    name: 'playwright-mcp-server',
-    version: '0.1.0',
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
+// Create MCP server instance
+const server = new Server({
+  name: 'playwright-mcp-server',
+  version: '0.1.0',
+}, {
+  capabilities: {
+    tools: {}
   }
-);
-
-// List available tools for MCP
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'navigate_to_url',
-        description: 'Navigate to a specific URL and take a screenshot',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            url: {
-              type: 'string',
-              description: 'The URL to navigate to',
-            },
-          },
-          required: ['url'],
-        },
-      },
-      {
-        name: 'fill_form',
-        description: 'Fill out form fields on a webpage',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            url: {
-              type: 'string',
-              description: 'The URL of the page with the form',
-            },
-            fields: {
-              type: 'array',
-              description: 'Array of form fields to fill',
-            },
-          },
-          required: ['url', 'fields'],
-        },
-      },
-      {
-        name: 'click_element',
-        description: 'Click on an element on a webpage',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            url: {
-              type: 'string',
-              description: 'The URL of the page',
-            },
-            selector: {
-              type: 'string',
-              description: 'CSS selector for the element to click',
-            },
-          },
-          required: ['url', 'selector'],
-        },
-      },
-      {
-        name: 'get_page_content',
-        description: 'Get the HTML content and form structure of a webpage',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            url: {
-              type: 'string',
-              description: 'The URL of the page to inspect',
-            },
-            selector: {
-              type: 'string',
-              description: 'Optional CSS selector to get content from specific element only',
-            },
-            includeFormStructure: {
-              type: 'boolean',
-              description: 'Whether to include detailed form field information',
-              default: true,
-            },
-          },
-          required: ['url'],
-        },
-      },
-    ],
-  };
 });
 
-// Handle tool execution for MCP
+// Global browser and page variables
+let browser;
+let page;
+
+// Helper function to ensure browser is running
+async function ensureBrowser() {
+  if (!browser) {
+    browser = await chromium.launch({ headless: true });
+    page = await browser.newPage();
+  }
+  return page;
+}
+
+// Tool definitions
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: 'navigate_to_url',
+      description: 'Navigate to a specific URL',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'The URL to navigate to'
+          }
+        },
+        required: ['url']
+      }
+    },
+    {
+      name: 'fill_form',
+      description: 'Fill out a form field on the current page',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: {
+            type: 'string',
+            description: 'CSS selector for the form field'
+          },
+          value: {
+            type: 'string',
+            description: 'Value to fill in the field'
+          }
+        },
+        required: ['selector', 'value']
+      }
+    },
+    {
+      name: 'click_element',
+      description: 'Click on an element on the current page',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: {
+            type: 'string',
+            description: 'CSS selector for the element to click'
+          }
+        },
+        required: ['selector']
+      }
+    },
+    {
+      name: 'get_page_content',
+      description: 'Get the text content of the current page',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  ]
+}));
+
+// Tool implementations
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-
+  
   try {
-    let result;
+    const page = await ensureBrowser();
+    
     switch (name) {
       case 'navigate_to_url':
-        result = await handleNavigateToUrl(args);
-        break;
+        await page.goto(args.url);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully navigated to ${args.url}`
+            }
+          ]
+        };
+        
       case 'fill_form':
-        result = await handleFillForm(args);
-        break;
+        await page.fill(args.selector, args.value);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully filled form field ${args.selector} with value: ${args.value}`
+            }
+          ]
+        };
+        
       case 'click_element':
-        result = await handleClickElement(args);
-        break;
+        await page.click(args.selector);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully clicked element: ${args.selector}`
+            }
+          ]
+        };
+        
       case 'get_page_content':
-        result = await handleGetPageContent(args);
-        break;
+        const content = await page.textContent('body');
+        return {
+          content: [
+            {
+              type: 'text',
+              text: content || 'No content found'
+            }
+          ]
+        };
+        
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
-
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-    };
   } catch (error) {
-    return {
-      content: [{ type: 'text', text: `Error: ${error.message}` }],
-      isError: true,
-    };
+    throw new Error(`Tool execution failed: ${error.message}`);
   }
 });
 
-// Tool implementation functions
-async function handleNavigateToUrl(args) {
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
-  
-  try {
-    await page.goto(args.url);
-    const screenshot = await page.screenshot({ fullPage: true });
-    await browser.close();
-    
-    return {
-      success: true,
-      message: `Successfully navigated to ${args.url}`,
-      screenshot: screenshot.toString('base64'),
-    };
-  } catch (error) {
-    await browser.close();
-    throw error;
-  }
-}
+// SSE connection management
+const connections = new Map();
 
-async function handleFillForm(args) {
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
-  
-  try {
-    await page.goto(args.url);
-    
-    for (const field of args.fields) {
-      await page.fill(field.selector, field.value);
-    }
-    
-    const screenshot = await page.screenshot({ fullPage: true });
-    await browser.close();
-    
-    return {
-      success: true,
-      message: `Successfully filled ${args.fields.length} form fields`,
-      screenshot: screenshot.toString('base64'),
-    };
-  } catch (error) {
-    await browser.close();
-    throw error;
-  }
-}
-
-async function handleClickElement(args) {
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
-  
-  try {
-    await page.goto(args.url);
-    await page.click(args.selector);
-    
-    const screenshot = await page.screenshot({ fullPage: true });
-    await browser.close();
-    
-    return {
-      success: true,
-      message: `Successfully clicked element: ${args.selector}`,
-      screenshot: screenshot.toString('base64'),
-    };
-  } catch (error) {
-    await browser.close();
-    throw error;
-  }
-}
-
-async function handleGetPageContent(args) {
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
-  
-  try {
-    await page.goto(args.url);
-    
-    let content;
-    if (args.selector) {
-      const element = await page.$(args.selector);
-      content = element ? await element.innerHTML() : null;
-    } else {
-      content = await page.content();
-    }
-    
-    let formStructure = null;
-    if (args.includeFormStructure !== false) {
-      const forms = await page.$$eval('form', forms => 
-        forms.map((form, index) => ({
-          formIndex: index,
-          action: form.action || '',
-          method: form.method || 'GET',
-          fields: Array.from(form.querySelectorAll('input, textarea, select')).map(field => ({
-            name: field.name || '',
-            id: field.id || '',
-            type: field.type || 'text',
-            placeholder: field.placeholder || '',
-            required: field.required || false,
-            value: field.value || '',
-            selector: field.id ? `#${field.id}` : field.name ? `[name="${field.name}"]` : '',
-          }))
-        }))
-      );
-      formStructure = forms;
-    }
-    
-    const title = await page.title();
-    await browser.close();
-    
-    return {
-      success: true,
-      url: args.url,
-      title: title,
-      content: content,
-      formStructure: formStructure,
-    };
-  } catch (error) {
-    await browser.close();
-    throw error;
-  }
-}
-
-// HTTP Server to handle MCP over HTTP
-const httpServer = http.createServer(async (req, res) => {
-  // Set CORS headers
+// HTTP server for SSE
+const httpServer = http.createServer((req, res) => {
+  // Handle CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
@@ -271,11 +164,13 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
-    // Health check endpoint
-    res.writeHead(200);
-    res.end(JSON.stringify({ 
-      status: 'healthy', 
+  console.log(`${req.method} ${req.url}`);
+
+  // Health check endpoint
+  if (req.method === 'GET' && req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'healthy',
       service: 'playwright-mcp-server',
       tools: ['navigate_to_url', 'fill_form', 'click_element', 'get_page_content'],
       timestamp: new Date().toISOString()
@@ -283,7 +178,38 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && (req.url === '/messages' || req.url === '/mcp' || req.url === '/')) {
+  // SSE endpoint
+  if (req.method === 'GET' && (req.url === '/sse' || req.url === '/')) {
+    // Set up SSE
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+
+    // Generate connection ID
+    const connectionId = Math.random().toString(36).substring(7);
+    console.log(`New SSE connection: ${connectionId}`);
+
+    // Store connection
+    connections.set(connectionId, res);
+
+    // Send initial endpoint event
+    res.write(`event: endpoint\n`);
+    res.write(`data: /mcp\n\n`);
+
+    // Handle connection close
+    req.on('close', () => {
+      console.log(`SSE connection closed: ${connectionId}`);
+      connections.delete(connectionId);
+    });
+
+    return;
+  }
+
+  // MCP JSON-RPC endpoint
+  if (req.method === 'POST' && req.url === '/mcp') {
     let body = '';
     req.on('data', chunk => {
       body += chunk.toString();
@@ -292,14 +218,12 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         console.log('Received MCP request:', body);
-        console.log('Request URL:', req.url);
-        console.log('Request method:', req.method);
         const request = JSON.parse(body);
+        
+        let response;
         
         // Handle MCP JSON-RPC requests
         if (request.jsonrpc === '2.0') {
-          let response;
-          
           if (request.method === 'initialize') {
             // Handle MCP initialization
             response = {
@@ -331,16 +255,11 @@ const httpServer = http.createServer(async (req, res) => {
               result: toolsResponse
             };
           } else if (request.method === 'tools/call') {
-            const callResponse = await server.requestHandlers.get(CallToolRequestSchema.name)({
-              params: request.params,
-              method: 'tools/call',
-              id: request.id
-            });
-            
+            const toolResponse = await server.requestHandlers.get(CallToolRequestSchema.name)(request);
             response = {
               jsonrpc: '2.0',
               id: request.id,
-              result: callResponse
+              result: toolResponse
             };
           } else {
             response = {
@@ -348,34 +267,52 @@ const httpServer = http.createServer(async (req, res) => {
               id: request.id,
               error: {
                 code: -32601,
-                message: 'Method not found'
+                message: `Method not found: ${request.method}`
               }
             };
           }
           
-          res.writeHead(200);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(response));
           console.log('Sent response:', JSON.stringify(response));
         } else {
-          res.writeHead(400);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
         }
       } catch (error) {
         console.error('Error processing request:', error);
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: 'Internal server error', details: error.message }));
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: request?.id || null,
+          error: {
+            code: -32603,
+            message: `Internal error: ${error.message}`
+          }
+        }));
       }
     });
-  } else {
-    res.writeHead(404);
-    res.end(JSON.stringify({ error: 'Not found' }));
+    return;
   }
+
+  // 404 for other routes
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not Found');
 });
 
-httpServer.listen(PORT, '0.0.0.0', () => {
+// Cleanup on exit
+process.on('SIGINT', async () => {
+  console.log('Shutting down...');
+  if (browser) {
+    await browser.close();
+  }
+  process.exit(0);
+});
+
+// Start server
+const PORT = process.env.PORT || 10000;
+httpServer.listen(PORT, () => {
   console.log(`Playwright MCP Server running on port ${PORT}`);
-  console.log(`HTTP Health server running on port ${PORT}`);
-  console.log(`MCP over HTTP available at: https://playwright-mcp-server.onrender.com`);
+  console.log(`SSE endpoint: https://playwright-mcp-server.onrender.com/sse`);
+  console.log(`MCP endpoint: https://playwright-mcp-server.onrender.com/mcp`);
 });
-
-console.log('Playwright MCP Server running on port 10000');
