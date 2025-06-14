@@ -198,9 +198,22 @@ const httpServer = http.createServer((req, res) => {
     res.write(`event: endpoint\n`);
     res.write(`data: /mcp\n\n`);
 
+    // Keep connection alive with periodic heartbeats
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`event: heartbeat\n`);
+        res.write(`data: ${Date.now()}\n\n`);
+      } catch (error) {
+        console.log(`Heartbeat failed for connection ${connectionId}:`, error.message);
+        clearInterval(heartbeat);
+        connections.delete(connectionId);
+      }
+    }, 30000); // Every 30 seconds
+
     // Handle connection close
     req.on('close', () => {
       console.log(`SSE connection closed: ${connectionId}`);
+      clearInterval(heartbeat);
       connections.delete(connectionId);
     });
 
