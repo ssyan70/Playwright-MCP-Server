@@ -147,6 +147,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// Store request handlers for easy access
+const requestHandlers = new Map();
+requestHandlers.set('tools/list', server.requestHandlers.get(ListToolsRequestSchema));
+requestHandlers.set('tools/call', server.requestHandlers.get(CallToolRequestSchema));
+
 // SSE connection management
 const connections = new Map();
 
@@ -212,9 +217,10 @@ const httpServer = http.createServer((req, res) => {
       });
 
       req.on('end', async () => {
+        let request; // Declare request in the correct scope
         try {
           console.log('Received MCP Streamable request:', body);
-          const request = JSON.parse(body);
+          request = JSON.parse(body);
           
           let response;
           let sessionId;
@@ -241,25 +247,41 @@ const httpServer = http.createServer((req, res) => {
                   }
                 }
               };
+            } else if (request.method === 'notifications/initialized') {
+              // Handle initialization notification (no response needed)
+              console.log('Client initialized');
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(); // No response body for notifications
+              return;
             } else if (request.method === 'tools/list') {
-              const toolsResponse = await server.requestHandlers.get(ListToolsRequestSchema.name)({
-                params: {},
-                method: 'tools/list',
-                id: request.id
-              });
-              
-              response = {
-                jsonrpc: '2.0',
-                id: request.id,
-                result: toolsResponse
-              };
+              const handler = requestHandlers.get('tools/list');
+              if (handler) {
+                const toolsResponse = await handler({
+                  params: {},
+                  method: 'tools/list',
+                  id: request.id
+                });
+                
+                response = {
+                  jsonrpc: '2.0',
+                  id: request.id,
+                  result: toolsResponse
+                };
+              } else {
+                throw new Error('Tools list handler not found');
+              }
             } else if (request.method === 'tools/call') {
-              const toolResponse = await server.requestHandlers.get(CallToolRequestSchema.name)(request);
-              response = {
-                jsonrpc: '2.0',
-                id: request.id,
-                result: toolResponse
-              };
+              const handler = requestHandlers.get('tools/call');
+              if (handler) {
+                const toolResponse = await handler(request);
+                response = {
+                  jsonrpc: '2.0',
+                  id: request.id,
+                  result: toolResponse
+                };
+              } else {
+                throw new Error('Tools call handler not found');
+              }
             } else {
               response = {
                 jsonrpc: '2.0',
