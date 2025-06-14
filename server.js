@@ -13,57 +13,85 @@ app.get('/health', (req, res) => {
 
 // Initialize browser with Render-optimized settings
 async function initBrowser() {
-  if (!browser) {
-    // Set the browsers path to a persistent directory
-    const browsersPath = '/opt/render/project/playwright';
-    process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
-    
-    console.log('PLAYWRIGHT_BROWSERS_PATH set to:', browsersPath);
-    
-    // Check if browsers exist, if not install them
-    const fs = await import('fs');
-    if (!fs.existsSync(browsersPath)) {
-      console.log('Browsers not found, installing Playwright browsers...');
-      try {
-        const { execSync } = await import('child_process');
-        execSync('npx playwright install chromium', { stdio: 'inherit' });
-        console.log('Playwright browsers installed successfully');
-      } catch (installError) {
-        console.log('Failed to install browsers:', installError.message);
-        throw new Error('Failed to install Playwright browsers');
-      }
-    } else {
-      console.log('Browsers found at:', browsersPath);
-    }
-    
-    const launchOptions = { 
-      headless: true,
-      args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor'
-      ]
-    };
-    
-    try {
-      console.log('Attempting to launch browser...');
-      
-      // Try regular chromium launch (should work now with proper path)
-      browser = await chromium.launch(launchOptions);
-      console.log('Browser launched successfully!');
-      
-    } catch (error) {
-      console.log('Browser launch failed:', error.message);
-      throw new Error('Failed to launch browser: ' + error.message);
-    }
+  // Check if browser exists and is still connected
+  if (browser && browser.isConnected()) {
+    console.log('Reusing existing browser instance');
+    return browser;
   }
-  return browser;
+  
+  // If browser exists but disconnected, clean it up
+  if (browser) {
+    console.log('Browser disconnected, cleaning up...');
+    try {
+      await browser.close();
+    } catch (e) {
+      console.log('Error closing old browser:', e.message);
+    }
+    browser = null;
+  }
+  
+  console.log('Creating new browser instance...');
+  
+  // Set the browsers path to a persistent directory
+  const browsersPath = '/opt/render/project/playwright';
+  process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
+  
+  console.log('PLAYWRIGHT_BROWSERS_PATH set to:', browsersPath);
+  
+  // Check if browsers exist, if not install them
+  const fs = await import('fs');
+  if (!fs.existsSync(browsersPath)) {
+    console.log('Browsers not found, installing Playwright browsers...');
+    try {
+      const { execSync } = await import('child_process');
+      execSync('npx playwright install chromium', { stdio: 'inherit' });
+      console.log('Playwright browsers installed successfully');
+    } catch (installError) {
+      console.log('Failed to install browsers:', installError.message);
+      throw new Error('Failed to install Playwright browsers');
+    }
+  } else {
+    console.log('Browsers found at:', browsersPath);
+  }
+  
+  const launchOptions = { 
+    headless: true,
+    timeout: 60000, // Increase launch timeout
+    args: [
+      '--no-sandbox', 
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding'
+    ]
+  };
+  
+  try {
+    console.log('Attempting to launch browser...');
+    
+    // Try regular chromium launch (should work now with proper path)
+    browser = await chromium.launch(launchOptions);
+    console.log('Browser launched successfully!');
+    
+    // Test browser connection
+    if (!browser.isConnected()) {
+      throw new Error('Browser launched but is not connected');
+    }
+    
+    return browser;
+    
+  } catch (error) {
+    console.log('Browser launch failed:', error.message);
+    browser = null;
+    throw new Error('Failed to launch browser: ' + error.message);
+  }
 }
 
 // MCP Protocol Implementation
@@ -213,15 +241,31 @@ app.post('/', async (req, res) => {
 // Handle tool calls
 async function handleToolCall(toolName, args) {
   let context = null;
+  let browserInstance = null;
   
   try {
-    const browserInstance = await initBrowser();
+    console.log(`Handling tool call: ${toolName}`);
+    
+    // Get browser instance (reuse if available, create if needed)
+    browserInstance = await initBrowser();
+    
+    // Verify browser is still connected
+    if (!browserInstance.isConnected()) {
+      console.log('Browser disconnected, creating new instance');
+      browser = null; // Reset global browser
+      browserInstance = await initBrowser();
+    }
+    
+    // Create context and page
     context = await browserInstance.newContext();
     const page = await context.newPage();
     
+    console.log(`Browser context created for ${toolName}`);
+    
     switch (toolName) {
       case 'navigate_to_url':
-        await page.goto(args.url, { waitUntil: 'networkidle' });
+        console.log(`Navigating to: ${args.url}`);
+        await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
         const navScreenshot = await page.screenshot({ encoding: 'base64' });
         
         return {
@@ -239,12 +283,14 @@ async function handleToolCall(toolName, args) {
         };
         
       case 'fill_form':
-        await page.goto(args.url, { waitUntil: 'networkidle' });
+        console.log(`Filling form at: ${args.url}`);
+        await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
         
         const results = [];
         for (const field of args.fields) {
           try {
             const { selector, value, action = 'fill' } = field;
+            console.log(`Processing field: ${selector} = ${value} (${action})`);
             
             await page.waitForSelector(selector, { timeout: 10000 });
             
@@ -264,7 +310,10 @@ async function handleToolCall(toolName, args) {
               action,
               status: 'success'
             });
+            
+            console.log(`Successfully processed: ${selector}`);
           } catch (fieldError) {
+            console.log(`Error processing field ${field.selector}:`, fieldError.message);
             results.push({
               selector: field.selector,
               value: field.value,
@@ -295,7 +344,8 @@ async function handleToolCall(toolName, args) {
         };
         
       case 'click_element':
-        await page.goto(args.url, { waitUntil: 'networkidle' });
+        console.log(`Clicking element at: ${args.url}`);
+        await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
         await page.waitForSelector(args.selector, { timeout: 10000 });
         await page.click(args.selector);
         
@@ -322,14 +372,20 @@ async function handleToolCall(toolName, args) {
         throw new Error(`Unknown tool: ${toolName}`);
     }
     
+  } catch (error) {
+    console.error(`Tool call error for ${toolName}:`, error.message);
+    throw error;
   } finally {
     if (context) {
       try {
+        console.log('Closing context...');
         await context.close();
+        console.log('Context closed successfully');
       } catch (closeError) {
         console.log('Error closing context:', closeError.message);
       }
     }
+    // Don't close the browser - keep it alive for reuse
   }
 }
 
