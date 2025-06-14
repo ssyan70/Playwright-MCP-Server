@@ -26,8 +26,8 @@ async function ensureBrowser() {
   return page;
 }
 
-// Tool definitions
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
+// Define tools list response
+const toolsList = {
   tools: [
     {
       name: 'navigate_to_url',
@@ -85,9 +85,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     }
   ]
-}));
+};
 
 // Tool implementations
+server.setRequestHandler(ListToolsRequestSchema, async () => toolsList);
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   
@@ -147,10 +149,69 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Store request handlers for easy access
-const requestHandlers = new Map();
-requestHandlers.set('tools/list', server.requestHandlers.get(ListToolsRequestSchema));
-requestHandlers.set('tools/call', server.requestHandlers.get(CallToolRequestSchema));
+// Helper functions to handle MCP requests directly
+async function handleToolsList() {
+  return toolsList;
+}
+
+async function handleToolsCall(request) {
+  const { name, arguments: args } = request.params;
+  
+  try {
+    const page = await ensureBrowser();
+    
+    switch (name) {
+      case 'navigate_to_url':
+        await page.goto(args.url);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully navigated to ${args.url}`
+            }
+          ]
+        };
+        
+      case 'fill_form':
+        await page.fill(args.selector, args.value);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully filled form field ${args.selector} with value: ${args.value}`
+            }
+          ]
+        };
+        
+      case 'click_element':
+        await page.click(args.selector);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully clicked element: ${args.selector}`
+            }
+          ]
+        };
+        
+      case 'get_page_content':
+        const content = await page.textContent('body');
+        return {
+          content: [
+            {
+              type: 'text',
+              text: content || 'No content found'
+            }
+          ]
+        };
+        
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  } catch (error) {
+    throw new Error(`Tool execution failed: ${error.message}`);
+  }
+}
 
 // SSE connection management
 const connections = new Map();
@@ -254,34 +315,20 @@ const httpServer = http.createServer((req, res) => {
               res.end(); // No response body for notifications
               return;
             } else if (request.method === 'tools/list') {
-              const handler = requestHandlers.get('tools/list');
-              if (handler) {
-                const toolsResponse = await handler({
-                  params: {},
-                  method: 'tools/list',
-                  id: request.id
-                });
-                
-                response = {
-                  jsonrpc: '2.0',
-                  id: request.id,
-                  result: toolsResponse
-                };
-              } else {
-                throw new Error('Tools list handler not found');
-              }
+              const toolsResponse = await handleToolsList();
+              
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                result: toolsResponse
+              };
             } else if (request.method === 'tools/call') {
-              const handler = requestHandlers.get('tools/call');
-              if (handler) {
-                const toolResponse = await handler(request);
-                response = {
-                  jsonrpc: '2.0',
-                  id: request.id,
-                  result: toolResponse
-                };
-              } else {
-                throw new Error('Tools call handler not found');
-              }
+              const toolResponse = await handleToolsCall(request);
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                result: toolResponse
+              };
             } else {
               response = {
                 jsonrpc: '2.0',
@@ -348,4 +395,5 @@ httpServer.listen(PORT, () => {
   console.log(`Playwright MCP Server running on port ${PORT}`);
   console.log(`HTTP Streamable endpoint: https://playwright-mcp-server.onrender.com/mcp`);
   console.log(`Legacy SSE endpoint: https://playwright-mcp-server.onrender.com/mcp (GET)`);
+  console.log(`Health check endpoint: https://playwright-mcp-server.onrender.com/health`);
 });
