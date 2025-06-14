@@ -13,9 +13,8 @@ let browser = null;
 // Initialize browser with Render-optimized settings
 async function initBrowser() {
   if (!browser) {
-    browser = await chromium.launch({ 
+    const launchOptions = { 
       headless: true,
-      executablePath: '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chrome',
       args: [
         '--no-sandbox', 
         '--disable-setuid-sandbox',
@@ -23,9 +22,45 @@ async function initBrowser() {
         '--disable-gpu',
         '--no-first-run',
         '--no-zygote',
-        '--single-process'
+        '--single-process',
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor'
       ]
-    });
+    };
+    
+    // Try different executable paths for Render environment
+    const possiblePaths = [
+      '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chrome',
+      '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chromium',
+      process.env.PLAYWRIGHT_BROWSERS_PATH + '/chromium-1178/chrome-linux/chrome',
+      process.env.PLAYWRIGHT_BROWSERS_PATH + '/chromium-1178/chrome-linux/chromium'
+    ];
+    
+    // First try without specifying executable path (let Playwright find it)
+    try {
+      browser = await chromium.launch(launchOptions);
+      console.log('Browser launched successfully with default executable');
+    } catch (error) {
+      console.log('Default launch failed, trying specific paths...');
+      
+      // Try each possible path
+      for (const path of possiblePaths) {
+        if (path) {
+          try {
+            console.log(`Trying executable path: ${path}`);
+            browser = await chromium.launch({ ...launchOptions, executablePath: path });
+            console.log(`Browser launched successfully with path: ${path}`);
+            break;
+          } catch (pathError) {
+            console.log(`Failed with path ${path}: ${pathError.message}`);
+          }
+        }
+      }
+    }
+    
+    if (!browser) {
+      throw new Error('Failed to launch browser with any available path');
+    }
   }
   return browser;
 }
