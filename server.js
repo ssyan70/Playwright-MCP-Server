@@ -194,9 +194,13 @@ const httpServer = http.createServer((req, res) => {
     // Store connection
     connections.set(connectionId, res);
 
-    // Send initial endpoint event
+    // Send initial endpoint event - try different format
     res.write(`event: endpoint\n`);
     res.write(`data: /mcp\n\n`);
+    
+    // Also send a ready event that some MCP clients expect
+    res.write(`event: ready\n`);
+    res.write(`data: {"endpoint": "/mcp"}\n\n`);
 
     // Keep connection alive with periodic heartbeats
     const heartbeat = setInterval(() => {
