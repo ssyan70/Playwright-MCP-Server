@@ -298,7 +298,25 @@ const httpServer = http.createServer(async (req, res) => {
         if (request.jsonrpc === '2.0') {
           let response;
           
-          if (request.method === 'tools/list') {
+          if (request.method === 'initialize') {
+            // Handle MCP initialization
+            response = {
+              jsonrpc: '2.0',
+              id: request.id,
+              result: {
+                protocolVersion: '2025-03-26',
+                capabilities: {
+                  tools: {},
+                  prompts: {},
+                  resources: {}
+                },
+                serverInfo: {
+                  name: 'playwright-mcp-server',
+                  version: '0.1.0'
+                }
+              }
+            };
+          } else if (request.method === 'tools/list') {
             const toolsResponse = await server.requestHandlers.get(ListToolsRequestSchema.name)({
               params: {},
               method: 'tools/list',
