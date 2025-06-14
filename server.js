@@ -28,12 +28,14 @@ async function initBrowser() {
       ]
     };
     
-    // Try different executable paths for Render environment
+    // Try different executable paths based on actual Render structure
     const possiblePaths = [
       '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chrome',
       '/opt/render/.cache/ms-playwright/chromium-1178/chrome-linux/chromium',
-      process.env.PLAYWRIGHT_BROWSERS_PATH + '/chromium-1178/chrome-linux/chrome',
-      process.env.PLAYWRIGHT_BROWSERS_PATH + '/chromium-1178/chrome-linux/chromium'
+      '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/chrome-headless-shell-linux/chrome-headless-shell',
+      '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/chrome-linux/chrome',
+      '/opt/render/.cache/ms-playwright/chromium-1178/chromium-linux/chrome',
+      '/opt/render/.cache/ms-playwright/chromium-1178/chromium-linux/chromium'
     ];
     
     // First try without specifying executable path (let Playwright find it)
@@ -42,24 +44,35 @@ async function initBrowser() {
       console.log('Browser launched successfully with default executable');
     } catch (error) {
       console.log('Default launch failed, trying specific paths...');
+      console.log('Default error:', error.message);
       
       // Try each possible path
       for (const path of possiblePaths) {
-        if (path) {
-          try {
-            console.log(`Trying executable path: ${path}`);
-            browser = await chromium.launch({ ...launchOptions, executablePath: path });
-            console.log(`Browser launched successfully with path: ${path}`);
-            break;
-          } catch (pathError) {
-            console.log(`Failed with path ${path}: ${pathError.message}`);
-          }
+        try {
+          console.log(`Trying executable path: ${path}`);
+          browser = await chromium.launch({ ...launchOptions, executablePath: path });
+          console.log(`Browser launched successfully with path: ${path}`);
+          break;
+        } catch (pathError) {
+          console.log(`Failed with path ${path}: ${pathError.message}`);
         }
       }
     }
     
     if (!browser) {
-      throw new Error('Failed to launch browser with any available path');
+      // Try using the headless shell as a last resort
+      try {
+        console.log('Trying chromium headless shell...');
+        const { chromium: headlessChromium } = require('playwright');
+        browser = await headlessChromium.launch({
+          ...launchOptions,
+          executablePath: '/opt/render/.cache/ms-playwright/chromium_headless_shell-1178/chrome-headless-shell'
+        });
+        console.log('Browser launched successfully with headless shell');
+      } catch (headlessError) {
+        console.log('Headless shell failed:', headlessError.message);
+        throw new Error('Failed to launch browser with any available path');
+      }
     }
   }
   return browser;
