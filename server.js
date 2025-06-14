@@ -177,6 +177,11 @@ app.post('/', async (req, res) => {
         };
         break;
         
+      case 'notifications/initialized':
+        // This is a notification, no response needed
+        res.status(200).end();
+        return;
+        
       default:
         throw new Error(`Unknown method: ${method}`);
     }
