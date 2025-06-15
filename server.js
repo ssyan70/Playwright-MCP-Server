@@ -26,7 +26,138 @@ async function ensureBrowser() {
   return page;
 }
 
-// Define tools list response
+// HouseSigma Chart Data Extraction Function
+async function extractHouseSigmaChartData(page, url) {
+  const chartApiData = [];
+  
+  // Set up response monitoring for chart API data
+  page.on('response', async (response) => {
+    const responseUrl = response.url();
+    
+    // Capture the specific chart API endpoint
+    if (responseUrl.includes('/api/stats/trend/chart')) {
+      try {
+        const text = await response.text();
+        const parsedData = JSON.parse(text);
+        
+        chartApiData.push({
+          url: responseUrl,
+          status: response.status(),
+          contentType: response.headers()['content-type'] || '',
+          timestamp: new Date().toISOString(),
+          data: parsedData
+        });
+        
+        console.log('Chart API data captured successfully');
+      } catch (e) {
+        console.warn('Failed to parse chart API response:', e.message);
+      }
+    }
+  });
+  
+  try {
+    // Navigate to the market trends page
+    console.log('Navigating to market trends page');
+    await page.goto(url, { waitUntil: 'networkidle' });
+    
+    // Wait for API calls to complete
+    await page.waitForTimeout(10000);
+    
+    // Check if authentication is required
+    const needsAuth = await page.evaluate(() => {
+      return document.querySelectorAll('.blur-light, .blur, .auth-btn, [class*="login"]').length > 0;
+    });
+    
+    if (needsAuth) {
+      console.log('Authentication required - attempting login');
+      
+      // Navigate to login page
+      await page.goto('https://housesigma.com/web/en/signin', { waitUntil: 'networkidle' });
+      await page.waitForTimeout(3000);
+      
+      // Fill login form
+      const loginSuccess = await page.evaluate(() => {
+        const inputs = document.querySelectorAll('input');
+        let emailInput = null;
+        let passwordInput = null;
+        
+        for (let input of inputs) {
+          const type = input.type.toLowerCase();
+          const placeholder = (input.placeholder || '').toLowerCase();
+          
+          if (type === 'email' || placeholder.includes('email') || placeholder.includes('username')) {
+            emailInput = input;
+          } else if (type === 'password') {
+            passwordInput = input;
+          }
+        }
+        
+        if (emailInput && passwordInput) {
+          emailInput.value = 'sandeep@syans.com';
+          emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+          
+          passwordInput.value = '1856HS!';
+          passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+          
+          // Submit form
+          const submitButton = document.querySelector('button[type="submit"], input[type="submit"]') || 
+                             Array.from(document.querySelectorAll('button')).find(btn => 
+                                 btn.textContent.toLowerCase().includes('sign in') || 
+                                 btn.textContent.toLowerCase().includes('login'));
+          
+          if (submitButton) {
+            submitButton.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (loginSuccess) {
+        await page.waitForTimeout(5000);
+        
+        // Navigate back to market trends page after login
+        await page.goto(url, { waitUntil: 'networkidle' });
+        await page.waitForTimeout(10000);
+      }
+    }
+    
+    // Return the chart data
+    if (chartApiData.length > 0) {
+      const latestChartData = chartApiData[chartApiData.length - 1];
+      
+      return {
+        success: true,
+        url: page.url(),
+        chartData: latestChartData.data,
+        apiUrl: latestChartData.url,
+        timestamp: latestChartData.timestamp,
+        summary: {
+          dataPointsCount: latestChartData.data?.data?.chart?.length || 0,
+          status: latestChartData.status
+        }
+      };
+    } else {
+      return {
+        success: false,
+        error: 'No chart API data was captured',
+        url: page.url(),
+        timestamp: new Date().toISOString()
+      };
+    }
+    
+  } catch (error) {
+    console.error('Error:', error.message);
+    return {
+      success: false,
+      error: error.message,
+      url: page.url(),
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+// Define tools list response (updated with new tool)
 const toolsList = {
   tools: [
     {
@@ -98,6 +229,20 @@ const toolsList = {
         properties: {},
         required: []
       }
+    },
+    {
+      name: 'extract_housesigma_chart',
+      description: 'Extract chart data from HouseSigma market trends page with automatic authentication handling',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'The HouseSigma market trends URL to extract chart data from'
+          }
+        },
+        required: ['url']
+      }
     }
   ]
 };
@@ -166,6 +311,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: content || 'No content found'
+            }
+          ]
+        };
+
+      case 'extract_housesigma_chart':
+        const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(chartResult, null, 2)
             }
           ]
         };
@@ -247,6 +403,17 @@ async function handleToolsCall(request) {
             }
           ]
         };
+
+      case 'extract_housesigma_chart':
+        const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(chartResult, null, 2)
+            }
+          ]
+        };
         
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -280,7 +447,7 @@ const httpServer = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'healthy',
       service: 'playwright-mcp-server',
-      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content'],
+      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'extract_housesigma_chart'],
       timestamp: new Date().toISOString()
     }));
     return;
@@ -439,4 +606,5 @@ httpServer.listen(PORT, () => {
   console.log(`HTTP Streamable endpoint: https://playwright-mcp-server.onrender.com/mcp`);
   console.log(`Legacy SSE endpoint: https://playwright-mcp-server.onrender.com/mcp (GET)`);
   console.log(`Health check endpoint: https://playwright-mcp-server.onrender.com/health`);
+  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, extract_housesigma_chart');
 });
