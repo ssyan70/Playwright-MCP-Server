@@ -26,172 +26,33 @@ async function ensureBrowser() {
   return page;
 }
 
-// MLS Community Detection Function
-async function extractMLSCommunity(page, address) {
+// Screenshot capture function
+async function captureScreenshot(page, filename = null) {
   try {
-    console.log(`Starting MLS community detection for: ${address}`);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const screenshotName = filename || `screenshot-${timestamp}.png`;
     
-    // Navigate to the Toronto MLS map page
-    await page.goto('https://www.torontomls.net/Communities/map.html', { 
-      waitUntil: 'networkidle',
-      timeout: 30000
+    // Capture screenshot as base64
+    const screenshot = await page.screenshot({ 
+      fullPage: true,
+      type: 'png'
     });
     
-    // Wait for page to fully load
-    await page.waitForTimeout(3000);
+    // Convert to base64 string
+    const base64Screenshot = screenshot.toString('base64');
     
-    // Check the current state of checkboxes and only click if needed
-    const checkboxStates = await page.evaluate(() => {
-      return {
-        area: document.querySelector('#arealayer')?.checked || false,
-        muni: document.querySelector('#munilayer')?.checked || false,
-        comm: document.querySelector('#commlayer')?.checked || false
-      };
-    });
-    
-    console.log('Current checkbox states:', checkboxStates);
-    
-    // Click Municipalities checkbox if not checked
-    if (!checkboxStates.muni) {
-      await page.click('#munilayer');
-      console.log('Clicked Municipalities checkbox');
-    }
-    
-    // Click Communities checkbox if not checked
-    if (!checkboxStates.comm) {
-      await page.click('#commlayer');
-      console.log('Clicked Communities checkbox');
-    }
-    
-    // Wait for checkbox changes to take effect
-    await page.waitForTimeout(2000);
-    
-    // Fill in the address in the search box
-    await page.fill('#geosearch', address);
-    console.log(`Filled address: ${address}`);
-    
-    // Click the search button
-    await page.click('button[onclick="LayerControl.search()"]');
-    console.log('Clicked search button');
-    
-    // Wait for search to complete and map to center
-    await page.waitForTimeout(5000);
-    
-    // Zoom out 8 times using only the zoom out button
-    console.log('Starting zoom out sequence...');
-    for (let i = 0; i < 8; i++) {
-      try {
-        // Look for the zoom out button with various selectors
-        await page.click('button[aria-label="Zoom out"], button[title="Zoom out"], button.gm-control-active[aria-label="Zoom out"]');
-        console.log(`Zoom out ${i + 1}/8 completed`);
-        await page.waitForTimeout(1000); // Wait between zooms
-      } catch (e) {
-        console.log(`Zoom ${i + 1} failed: ${e.message}`);
-        // Continue to next zoom attempt without fallback
-        await page.waitForTimeout(1000);
-      }
-    }
-    
-    // Wait for community labels to appear after zooming
-    console.log('Waiting for community labels to render...');
-    await page.waitForTimeout(5000);
-    
-    // Check the current URL to see if it contains community information
-    const currentUrl = page.url();
-    console.log('Current URL:', currentUrl);
-    
-    // Extract community information from URL parameters or page elements
-    const communityResult = await page.evaluate(() => {
-      // Get the current URL to check for community information
-      const url = window.location.href;
-      
-      // Look for community names in visible text elements on the page
-      const communityNames = new Set();
-      
-      // Check all visible text elements
-      const allElements = Array.from(document.querySelectorAll('*'));
-      allElements.forEach(el => {
-        if (el.children.length > 0) return; // Skip parent elements
-        
-        const text = el.textContent?.trim();
-        if (!text || text.length < 3 || text.length > 30) return;
-        
-        // Check if it looks like a community name (starts with capital letter, no numbers)
-        if (/^[A-Z][a-zA-Z\s-']+$/.test(text) && !/\d/.test(text)) {
-          const rect = el.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            communityNames.add(text);
-          }
-        }
-      });
-      
-      // Filter out common UI elements and controls
-      const excludeTerms = [
-        'keyboard', 'shortcuts', 'labels', 'satellite', 'terrain', 'zoom', 'map', 
-        'search', 'find', 'layer', 'area', 'municipalities', 'communities', 
-        'google', 'data', 'imagery', 'terms', 'privacy', 'copyright', 'help', 
-        'about', 'contact', 'treb', 'view', 'button', 'control', 'menu', 'home',
-        'back', 'forward', 'reload', 'stop', 'go', 'enter', 'close', 'open',
-        'save', 'print', 'edit', 'copy', 'paste', 'cut', 'undo', 'redo'
-      ];
-      
-      const filteredNames = Array.from(communityNames).filter(name => {
-        const lowerName = name.toLowerCase();
-        return !excludeTerms.some(term => lowerName.includes(term)) && 
-               name.length >= 4; // Minimum length for community names
-      });
-      
-      // Return the first valid community name found
-      if (filteredNames.length > 0) {
-        return {
-          found: true,
-          community: filteredNames[0],
-          method: 'page_text_extraction',
-          allCandidates: filteredNames,
-          url: url
-        };
-      }
-      
-      return {
-        found: false,
-        community: null,
-        method: 'no_community_found',
-        allTextFound: Array.from(communityNames),
-        url: url
-      };
-    });
-    
-    if (communityResult.found) {
-      return {
-        success: true,
-        address: address,
-        community: communityResult.community,
-        method: communityResult.method,
-        allCandidates: communityResult.allCandidates || [],
-        url: communityResult.url,
-        timestamp: new Date().toISOString()
-      };
-    } else {
-      return {
-        success: false,
-        error: 'No community name detected from the page elements',
-        address: address,
-        method: communityResult.method,
-        debugInfo: {
-          allTextFound: communityResult.allTextFound || [],
-          url: communityResult.url
-        },
-        url: communityResult.url,
-        timestamp: new Date().toISOString()
-      };
-    }
-    
+    return {
+      success: true,
+      filename: screenshotName,
+      base64: base64Screenshot,
+      url: page.url(),
+      timestamp: new Date().toISOString(),
+      size: screenshot.length
+    };
   } catch (error) {
-    console.error('MLS extraction error:', error);
     return {
       success: false,
-      error: `MLS processing failed: ${error.message}`,
-      address: address,
+      error: `Screenshot capture failed: ${error.message}`,
       timestamp: new Date().toISOString()
     };
   }
@@ -328,7 +189,7 @@ async function extractHouseSigmaChartData(page, url) {
   }
 }
 
-// Define tools list response (updated with new tool)
+// Define tools list response (updated with screenshot tool)
 const toolsList = {
   tools: [
     {
@@ -402,6 +263,21 @@ const toolsList = {
       }
     },
     {
+      name: 'capture_screenshot',
+      description: 'Capture a screenshot of the current page and return as base64',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filename: {
+            type: 'string',
+            description: 'Optional filename for the screenshot (default: auto-generated)',
+            default: null
+          }
+        },
+        required: []
+      }
+    },
+    {
       name: 'extract_housesigma_chart',
       description: 'Extract chart data from HouseSigma market trends page with automatic authentication handling',
       inputSchema: {
@@ -413,20 +289,6 @@ const toolsList = {
           }
         },
         required: ['url']
-      }
-    },
-    {
-      name: 'extract_mls_community',
-      description: 'Extract community name from Toronto MLS map for a given address. Automatically handles checkbox selection, address search, and map zoom.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          address: {
-            type: 'string',
-            description: 'The address to look up (e.g., "40 sunnyside hill rd, markham on")'
-          }
-        },
-        required: ['address']
       }
     }
   ]
@@ -500,6 +362,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ]
         };
 
+      case 'capture_screenshot':
+        const screenshotResult = await captureScreenshot(currentPage, args.filename);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(screenshotResult, null, 2)
+            }
+          ]
+        };
+
       case 'extract_housesigma_chart':
         const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
         return {
@@ -507,17 +380,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: JSON.stringify(chartResult, null, 2)
-            }
-          ]
-        };
-
-      case 'extract_mls_community':
-        const mlsResult = await extractMLSCommunity(currentPage, args.address);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(mlsResult, null, 2)
             }
           ]
         };
@@ -600,6 +462,17 @@ async function handleToolsCall(request) {
           ]
         };
 
+      case 'capture_screenshot':
+        const screenshotResult = await captureScreenshot(currentPage, args.filename);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(screenshotResult, null, 2)
+            }
+          ]
+        };
+
       case 'extract_housesigma_chart':
         const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
         return {
@@ -607,17 +480,6 @@ async function handleToolsCall(request) {
             {
               type: 'text',
               text: JSON.stringify(chartResult, null, 2)
-            }
-          ]
-        };
-
-      case 'extract_mls_community':
-        const mlsResult = await extractMLSCommunity(currentPage, args.address);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(mlsResult, null, 2)
             }
           ]
         };
@@ -654,7 +516,7 @@ const httpServer = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'healthy',
       service: 'playwright-mcp-server',
-      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'extract_housesigma_chart', 'extract_mls_community'],
+      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'capture_screenshot', 'extract_housesigma_chart'],
       timestamp: new Date().toISOString()
     }));
     return;
@@ -813,5 +675,5 @@ httpServer.listen(PORT, () => {
   console.log(`HTTP Streamable endpoint: https://playwright-mcp-server.onrender.com/mcp`);
   console.log(`Legacy SSE endpoint: https://playwright-mcp-server.onrender.com/mcp (GET)`);
   console.log(`Health check endpoint: https://playwright-mcp-server.onrender.com/health`);
-  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, extract_housesigma_chart, extract_mls_community');
+  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, capture_screenshot, extract_housesigma_chart');
 });
