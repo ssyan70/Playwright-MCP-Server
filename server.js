@@ -621,12 +621,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
 
       case 'screenshot_mls_debug':
-        const debugResult = await screenshotMLSDebug(currentPage, args.address);
+        const screenshotResult = await screenshotMLSDebug(currentPage, args.address);
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(debugResult, null, 2)
+              text: JSON.stringify(screenshotResult, null, 2)
             }
           ]
         };
