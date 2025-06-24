@@ -26,7 +26,309 @@ async function ensureBrowser() {
   return page;
 }
 
-// HouseSigma Chart Data Extraction Function
+// Toronto MLS Community Detection Function
+async function extractMLSCommunity(page, address) {
+  try {
+    console.log(`Starting MLS community detection for address: ${address}`);
+    
+    // Navigate to the Toronto MLS Communities map
+    await page.goto('https://www.torontomls.net/Communities/map.html', { 
+      waitUntil: 'networkidle',
+      timeout: 30000 
+    });
+    
+    // Wait for the page to fully load
+    await page.waitForTimeout(5000);
+    
+    console.log('Page loaded, checking for required elements...');
+    
+    // Check the three specific checkboxes based on the DOM inspection
+    const checkboxes = [
+      { id: 'arealayer', name: 'area', label: 'Area' },
+      { id: 'munilayer', name: 'muni', label: 'Municipalities' },
+      { id: 'commlayer', name: 'comm', label: 'Communities' }
+    ];
+    
+    console.log('Checking required checkboxes...');
+    
+    for (const checkbox of checkboxes) {
+      try {
+        // Try by ID first (most reliable)
+        await page.check(`#${checkbox.id}`);
+        console.log(`✓ Checked ${checkbox.label} checkbox (${checkbox.id})`);
+      } catch (e) {
+        try {
+          // Fallback: try by name attribute
+          await page.check(`input[name="${checkbox.name}"]`);
+          console.log(`✓ Checked ${checkbox.label} checkbox by name (${checkbox.name})`);
+        } catch (e2) {
+          console.log(`⚠️ Could not check ${checkbox.label} checkbox: ${e.message}`);
+        }
+      }
+    }
+    
+    // Verify checkboxes are checked
+    const checkedStatus = await page.evaluate(() => {
+      return {
+        area: document.getElementById('arealayer')?.checked || false,
+        municipalities: document.getElementById('munilayer')?.checked || false,
+        communities: document.getElementById('commlayer')?.checked || false
+      };
+    });
+    
+    console.log('Checkbox status:', checkedStatus);
+    
+    // Wait a moment for any dynamic updates
+    await page.waitForTimeout(2000);
+    
+    // Find the search input field using the exact ID from DOM inspection
+    const searchInputId = 'geosearch';
+    
+    try {
+      await page.fill(`#${searchInputId}`, address);
+      console.log(`✓ Entered address "${address}" in search field`);
+    } catch (e) {
+      return {
+        success: false,
+        error: `Could not find or fill search input field #${searchInputId}: ${e.message}`,
+        url: page.url()
+      };
+    }
+    
+    // Click the search button using the onclick attribute from DOM inspection
+    try {
+      // The button has onclick="LayerControl.search()">Search
+      await page.click('button:has-text("Search")');
+      console.log('✓ Clicked Search button');
+    } catch (e) {
+      try {
+        // Fallback: trigger the search function directly
+        await page.evaluate(() => {
+          if (typeof LayerControl !== 'undefined' && LayerControl.search) {
+            LayerControl.search();
+          }
+        });
+        console.log('✓ Triggered search via LayerControl.search()');
+      } catch (e2) {
+        // Final fallback: press Enter
+        await page.press(`#${searchInputId}`, 'Enter');
+        console.log('✓ Pressed Enter on search field');
+      }
+    }
+    
+    // Wait for search results (red pin) to appear
+    await page.waitForTimeout(8000);
+    
+    // Look for map markers or pins
+    const mapMarkers = await page.evaluate(() => {
+      // Common selectors for map markers
+      const markerSelectors = [
+        '.marker',
+        '.pin', 
+        '.map-marker',
+        '[class*="marker"]',
+        '[class*="pin"]',
+        'img[src*="marker"]',
+        'img[src*="pin"]',
+        'svg circle',
+        'svg path',
+        '.leaflet-marker-icon'
+      ];
+      
+      let foundMarkers = [];
+      markerSelectors.forEach(selector => {
+        const elements = document.querySelectorAll(selector);
+        foundMarkers.push(...Array.from(elements).map(el => ({
+          selector,
+          className: el.className,
+          src: el.src || '',
+          style: el.style.cssText || '',
+          tagName: el.tagName
+        })));
+      });
+      
+      return foundMarkers;
+    });
+    
+    console.log('Found map markers:', mapMarkers);
+    
+    // Zoom out to see community boundaries
+    let zoomAttempts = 0;
+    const maxZoomAttempts = 10;
+    
+    while (zoomAttempts < maxZoomAttempts) {
+      // Try various zoom-out methods
+      try {
+        // Method 1: Keyboard minus key
+        await page.keyboard.press('Minus');
+      } catch (e) {
+        try {
+          // Method 2: Mouse wheel scroll out
+          await page.mouse.wheel(0, 300);
+        } catch (e2) {
+          try {
+            // Method 3: Click zoom out button if it exists
+            await page.click('.zoom-out, .leaflet-control-zoom-out, [title*="Zoom out"], [title*="zoom out"]');
+          } catch (e3) {
+            try {
+              // Method 4: Double-click to zoom (reverse effect)
+              const mapContainer = await page.$('div[id*="map"], .leaflet-container, .mapboxgl-map, canvas');
+              if (mapContainer) {
+                await page.keyboard.down('Shift');
+                await mapContainer.dblclick();
+                await page.keyboard.up('Shift');
+              }
+            } catch (e4) {
+              console.log(`Zoom attempt ${zoomAttempts + 1} failed, continuing...`);
+            }
+          }
+        }
+      }
+      
+      await page.waitForTimeout(3000);
+      
+      // Look for community boundaries and labels
+      const communityInfo = await page.evaluate(() => {
+        // Look for text that might be community names
+        const allTextElements = Array.from(document.querySelectorAll('*')).filter(el => {
+          const text = el.textContent?.trim();
+          if (!text || text.length < 3 || text.length > 50) return false;
+          
+          // Skip common UI elements
+          const skipTexts = [
+            'search', 'find', 'map', 'zoom', 'layer', 'area', 'municipalities', 
+            'communities', 'mapquest', 'google', 'copyright', '©', 'terms',
+            'privacy', 'about', 'help', 'contact', 'home', 'back', 'forward'
+          ];
+          
+          const lowerText = text.toLowerCase();
+          if (skipTexts.some(skip => lowerText.includes(skip))) return false;
+          
+          // Look for proper nouns (community names typically start with capital letters)
+          if (!/^[A-Z]/.test(text)) return false;
+          
+          // Skip elements with children (we want text-only elements)
+          if (el.children.length > 0) return false;
+          
+          return true;
+        });
+        
+        const potentialCommunities = allTextElements.map(el => ({
+          text: el.textContent.trim(),
+          tagName: el.tagName,
+          className: el.className || '',
+          id: el.id || '',
+          parentTag: el.parentElement?.tagName || '',
+          parentClass: el.parentElement?.className || ''
+        }));
+        
+        // Look for dashed lines or boundaries (SVG paths, canvas, etc.)
+        const svgPaths = Array.from(document.querySelectorAll('path')).filter(path => {
+          const strokeDasharray = path.getAttribute('stroke-dasharray') || 
+                                 window.getComputedStyle(path).strokeDasharray;
+          return strokeDasharray && strokeDasharray !== 'none';
+        });
+        
+        // Look for any elements with dashed styling
+        const dashedElements = Array.from(document.querySelectorAll('*')).filter(el => {
+          const style = window.getComputedStyle(el);
+          return (style.borderStyle && style.borderStyle.includes('dashed')) ||
+                 (style.strokeDasharray && style.strokeDasharray !== 'none');
+        });
+        
+        return {
+          possibleCommunityNames: potentialCommunities.slice(0, 20), // Limit for debugging
+          dashedPaths: svgPaths.length,
+          dashedElements: dashedElements.length,
+          hasMap: !!document.querySelector('canvas, svg, .leaflet-container, .mapboxgl-map, [id*="map"]'),
+          totalTextElements: allTextElements.length
+        };
+      });
+      
+      console.log(`Zoom attempt ${zoomAttempts + 1}:`, {
+        possibleCommunities: communityInfo.possibleCommunityNames.length,
+        dashedPaths: communityInfo.dashedPaths,
+        dashedElements: communityInfo.dashedElements,
+        hasMap: communityInfo.hasMap
+      });
+      
+      // Enhanced community name detection
+      if (communityInfo.possibleCommunityNames.length > 0) {
+        // Filter for likely community names
+        const likelyCommunities = communityInfo.possibleCommunityNames.filter(item => {
+          const text = item.text;
+          
+          // Must be proper case and reasonable length
+          if (!/^[A-Z][a-zA-Z\s\-']+$/.test(text)) return false;
+          if (text.length < 3 || text.length > 30) return false;
+          
+          // Common community name patterns in Ontario
+          const communityPatterns = [
+            /^[A-Z][a-z]+$/, // Single word like "Cornell"
+            /^[A-Z][a-z]+\s[A-Z][a-z]+$/, // Two words like "Don Mills"
+            /^[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+$/, // Three words
+            /^[A-Z][a-z]+[-'][A-Z][a-z]+$/ // Hyphenated or apostrophe
+          ];
+          
+          return communityPatterns.some(pattern => pattern.test(text));
+        });
+        
+        if (likelyCommunities.length > 0) {
+          console.log('Found likely community names:', likelyCommunities.map(c => c.text));
+          
+          // Return the most likely community name (first one that matches our criteria)
+          const communityName = likelyCommunities[0].text;
+          
+          return {
+            success: true,
+            address: address,
+            community: communityName,
+            allPossibleCommunities: likelyCommunities,
+            zoomLevel: zoomAttempts + 1,
+            boundaryElements: communityInfo.dashedPaths + communityInfo.dashedElements,
+            searchPerformed: true,
+            markersFound: mapMarkers.length,
+            checkboxStatus: checkedStatus,
+            url: page.url(),
+            timestamp: new Date().toISOString()
+          };
+        }
+      }
+      
+      zoomAttempts++;
+    }
+    
+    // If we couldn't find community names through zooming, return detailed debug info
+    return {
+      success: false,
+      error: 'Could not identify community name after zooming out',
+      address: address,
+      searchPerformed: true,
+      markersFound: mapMarkers.length,
+      zoomAttempts: zoomAttempts,
+      checkboxStatus: checkedStatus,
+      url: page.url(),
+      timestamp: new Date().toISOString(),
+      debugInfo: {
+        checkboxStatus,
+        mapMarkers,
+        lastCommunityInfo: communityInfo
+      }
+    };
+    
+  } catch (error) {
+    console.error('Error in MLS community extraction:', error);
+    return {
+      success: false,
+      error: error.message,
+      address: address,
+      url: page?.url() || 'Unknown',
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+// HouseSigma Chart Data Extraction Function (existing)
 async function extractHouseSigmaChartData(page, url) {
   const chartApiData = [];
   
@@ -157,7 +459,7 @@ async function extractHouseSigmaChartData(page, url) {
   }
 }
 
-// Define tools list response (updated with new tool)
+// Define tools list response (updated with MLS tool)
 const toolsList = {
   tools: [
     {
@@ -243,6 +545,20 @@ const toolsList = {
         },
         required: ['url']
       }
+    },
+    {
+      name: 'extract_mls_community',
+      description: 'Extract MLS community name for a given address using Toronto Real Estate Board community map',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          address: {
+            type: 'string',
+            description: 'The address to look up (e.g., "40 sunnyside hill rd, markham on")'
+          }
+        },
+        required: ['address']
+      }
     }
   ]
 };
@@ -322,6 +638,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: JSON.stringify(chartResult, null, 2)
+            }
+          ]
+        };
+
+      case 'extract_mls_community':
+        const mlsResult = await extractMLSCommunity(currentPage, args.address);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(mlsResult, null, 2)
             }
           ]
         };
@@ -414,6 +741,17 @@ async function handleToolsCall(request) {
             }
           ]
         };
+
+      case 'extract_mls_community':
+        const mlsResult = await extractMLSCommunity(currentPage, args.address);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(mlsResult, null, 2)
+            }
+          ]
+        };
         
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -447,7 +785,7 @@ const httpServer = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'healthy',
       service: 'playwright-mcp-server',
-      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'extract_housesigma_chart'],
+      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'extract_housesigma_chart', 'extract_mls_community'],
       timestamp: new Date().toISOString()
     }));
     return;
@@ -606,5 +944,5 @@ httpServer.listen(PORT, () => {
   console.log(`HTTP Streamable endpoint: https://playwright-mcp-server.onrender.com/mcp`);
   console.log(`Legacy SSE endpoint: https://playwright-mcp-server.onrender.com/mcp (GET)`);
   console.log(`Health check endpoint: https://playwright-mcp-server.onrender.com/health`);
-  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, extract_housesigma_chart');
+  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, extract_housesigma_chart, extract_mls_community');
 });
