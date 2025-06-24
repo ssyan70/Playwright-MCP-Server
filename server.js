@@ -20,160 +20,104 @@ let page;
 // Helper function to ensure browser is running
 async function ensureBrowser() {
   if (!browser) {
-    browser = await chromium.launch({ 
-      headless: true,  // Keep headless - no visible browser
-      slowMo: 0       // No slow motion for speed
-    });
+    browser = await chromium.launch({ headless: true });
     page = await browser.newPage();
-    await page.setViewportSize({ width: 1280, height: 720 });
   }
   return page;
 }
 
-// Ultra-fast MLS Community Detection Function - optimized for speed
-async function extractMLSCommunityFast(page, address) {
+// MLS Community Detection Function
+async function extractMLSCommunity(page, address) {
   try {
-    console.log(`Starting VISUAL MLS community detection for: ${address}`);
+    console.log(`Starting MLS community detection for: ${address}`);
     
-    // Set aggressive timeouts and faster loading
+    // Navigate to the Toronto MLS map page
     await page.goto('https://www.torontomls.net/Communities/map.html', { 
-      waitUntil: 'domcontentloaded',
-      timeout: 15000
+      waitUntil: 'networkidle',
+      timeout: 30000
     });
     
-    // Wait to see the page load
-    console.log('Page loaded - waiting to see initial state...');
+    // Wait for page to fully load
     await page.waitForTimeout(3000);
     
-    // Fast checkbox checking - with visual feedback
-    console.log('Clicking checkboxes - watch the browser...');
-    await Promise.allSettled([
-      page.click('#arealayer').catch(() => console.log('Area layer checkbox not found')),
-      page.click('#munilayer').catch(() => console.log('Municipality layer checkbox not found')),
-      page.click('#commlayer').catch(() => console.log('Community layer checkbox not found'))
-    ]);
-    
-    // Wait to see checkbox effects
-    await page.waitForTimeout(1000);
-    
-    // Fast search - with visual feedback
-    console.log('Performing search - watch the search box...');
-    await page.fill('#geosearch', address);
-    await page.press('#geosearch', 'Enter');
-    
-    // Wait to see search complete
-    console.log('Search completed - waiting for map to center...');
-    await page.waitForTimeout(3000);
-    
-    // Fast zoom-out sequence - with visual feedback
-    console.log('Starting zoom sequence - watch the map zoom out...');
-    for (let i = 0; i < 8; i++) {
-      try {
-        // Try to click the zoom out button
-        await page.click('button[aria-label="Zoom out"], button[title="Zoom out"], .gm-control-active[aria-label="Zoom out"]');
-        console.log(`Zoom ${i + 1}/8 completed via button click - watch zoom level`);
-      } catch (e) {
-        try {
-          // Fallback to mouse wheel if button click fails
-          await page.mouse.wheel(0, 300);
-          console.log(`Zoom ${i + 1}/8 completed via mouse wheel (fallback)`);
-        } catch (e2) {
-          console.log(`Zoom ${i + 1}/8 failed - ${e2.message}`);
-        }
-      }
-      await page.waitForTimeout(500); // Longer wait so you can see each zoom
-    }
-    
-    // Wait for community labels to appear
-    console.log('Zoom complete - waiting for community labels to render...');
-    console.log('LOOK AT THE BROWSER: Can you see "Cornell" or any community names on the map?');
-    await page.waitForTimeout(5000); // Long wait so you can examine the map
-    
-    // Quick check of what's visible before detailed analysis
-    const quickCheck = await page.evaluate(() => {
-      const allVisibleText = Array.from(document.querySelectorAll('*'))
-        .filter(el => {
-          const rect = el.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0 && el.textContent?.trim();
-        })
-        .map(el => el.textContent.trim())
-        .filter(text => text.length >= 3 && text.length <= 30);
-      
+    // Check the current state of checkboxes and only click if needed
+    const checkboxStates = await page.evaluate(() => {
       return {
-        totalVisibleElements: allVisibleText.length,
-        sampleTexts: allVisibleText.slice(0, 20)
+        area: document.querySelector('#arealayer')?.checked || false,
+        muni: document.querySelector('#munilayer')?.checked || false,
+        comm: document.querySelector('#commlayer')?.checked || false
       };
     });
     
-    console.log('Quick visibility check:', quickCheck);
-    console.log('EXAMINE THE BROWSER: What text can you see on the map?');
+    console.log('Current checkbox states:', checkboxStates);
     
-    // Wait for user to examine
-    await page.waitForTimeout(3000);
+    // Click Municipalities checkbox if not checked
+    if (!checkboxStates.muni) {
+      await page.click('#munilayer');
+      console.log('Clicked Municipalities checkbox');
+    }
     
-    // Enhanced community detection - look for canvas/SVG text and map overlays
+    // Click Communities checkbox if not checked
+    if (!checkboxStates.comm) {
+      await page.click('#commlayer');
+      console.log('Clicked Communities checkbox');
+    }
+    
+    // Wait for checkbox changes to take effect
+    await page.waitForTimeout(2000);
+    
+    // Fill in the address in the search box
+    await page.fill('#geosearch', address);
+    console.log(`Filled address: ${address}`);
+    
+    // Click the search button
+    await page.click('button[onclick="LayerControl.search()"]');
+    console.log('Clicked search button');
+    
+    // Wait for search to complete and map to center
+    await page.waitForTimeout(5000);
+    
+    // Zoom out 8 times using only the zoom out button
+    console.log('Starting zoom out sequence...');
+    for (let i = 0; i < 8; i++) {
+      try {
+        // Look for the zoom out button with various selectors
+        await page.click('button[aria-label="Zoom out"], button[title="Zoom out"], button.gm-control-active[aria-label="Zoom out"]');
+        console.log(`Zoom out ${i + 1}/8 completed`);
+        await page.waitForTimeout(1000); // Wait between zooms
+      } catch (e) {
+        console.log(`Zoom ${i + 1} failed: ${e.message}`);
+        // Continue to next zoom attempt without fallback
+        await page.waitForTimeout(1000);
+      }
+    }
+    
+    // Wait for community labels to appear after zooming
+    console.log('Waiting for community labels to render...');
+    await page.waitForTimeout(5000);
+    
+    // Check the current URL to see if it contains community information
+    const currentUrl = page.url();
+    console.log('Current URL:', currentUrl);
+    
+    // Extract community information from URL parameters or page elements
     const communityResult = await page.evaluate(() => {
-      // Initialize community names set
+      // Get the current URL to check for community information
+      const url = window.location.href;
+      
+      // Look for community names in visible text elements on the page
       const communityNames = new Set();
       
-      // First, look specifically for "Cornell" anywhere on the page
-      const cornellElements = Array.from(document.querySelectorAll('*')).filter(el => {
-        const text = el.textContent?.trim();
-        return text && text.toLowerCase().includes('cornell');
-      });
-      
-      if (cornellElements.length > 0) {
-        return {
-          found: true,
-          community: 'Cornell',
-          method: 'specific_cornell_search'
-        };
-      }
-      
-      // Look for Google Maps style labels and overlays
-      const gmLabels = Array.from(document.querySelectorAll('[class*="gm"], [class*="map"], [class*="label"], [data-value], [title]')).filter(el => {
-        const text = el.textContent?.trim() || el.title || el.getAttribute('data-value') || '';
-        return text.length >= 4 && text.length <= 25 && /^[A-Z][a-zA-Z\s-']+$/.test(text);
-      });
-      
-      gmLabels.forEach(el => {
-        const text = el.textContent?.trim() || el.title || el.getAttribute('data-value') || '';
-        if (text) {
-          communityNames.add(text);
-        }
-      });
-      
-      // Check for any overlays or absolutely positioned elements that might be labels
-      const overlayElements = Array.from(document.querySelectorAll('*')).filter(el => {
-        const style = window.getComputedStyle(el);
-        return style.position === 'absolute' || style.position === 'fixed' || 
-               parseInt(style.zIndex) > 0;
-      });
-      
-      // Look for community names in overlay elements
-      overlayElements.forEach(el => {
-        const text = el.textContent?.trim();
-        if (text && text.length >= 4 && text.length <= 25) {
-          // Check if it looks like a community name
-          if (/^[A-Z][a-zA-Z\s-']+$/.test(text)) {
-            const rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              communityNames.add(text);
-            }
-          }
-        }
-      });
-      
-      // Also check all visible text elements regardless of positioning
+      // Check all visible text elements
       const allElements = Array.from(document.querySelectorAll('*'));
       allElements.forEach(el => {
         if (el.children.length > 0) return; // Skip parent elements
         
         const text = el.textContent?.trim();
-        if (!text || text.length < 4 || text.length > 25) return;
+        if (!text || text.length < 3 || text.length > 30) return;
         
-        // Check if it's a potential community name
-        if (/^[A-Z][a-zA-Z\s-']+$/.test(text)) {
+        // Check if it looks like a community name (starts with capital letter, no numbers)
+        if (/^[A-Z][a-zA-Z\s-']+$/.test(text) && !/\d/.test(text)) {
           const rect = el.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
             communityNames.add(text);
@@ -181,78 +125,39 @@ async function extractMLSCommunityFast(page, address) {
         }
       });
       
-      // Filter out common UI elements and map controls
+      // Filter out common UI elements and controls
       const excludeTerms = [
         'keyboard', 'shortcuts', 'labels', 'satellite', 'terrain', 'zoom', 'map', 
         'search', 'find', 'layer', 'area', 'municipalities', 'communities', 
         'google', 'data', 'imagery', 'terms', 'privacy', 'copyright', 'help', 
-        'about', 'contact', 'move', 'left', 'right', 'up', 'down', 'ctrl', 
-        'alt', 'shift', 'page', 'home', 'end', 'enter', 'escape', 'tab', 
-        'delete', 'insert', 'view', 'ytreb', 'treb', 'mapart'
+        'about', 'contact', 'treb', 'view', 'button', 'control', 'menu', 'home',
+        'back', 'forward', 'reload', 'stop', 'go', 'enter', 'close', 'open',
+        'save', 'print', 'edit', 'copy', 'paste', 'cut', 'undo', 'redo'
       ];
       
       const filteredNames = Array.from(communityNames).filter(name => {
         const lowerName = name.toLowerCase();
-        return !excludeTerms.some(term => lowerName.includes(term));
+        return !excludeTerms.some(term => lowerName.includes(term)) && 
+               name.length >= 4; // Minimum length for community names
       });
       
-      // Look specifically for known GTA communities near Markham
-      const markhamAreaCommunities = [
-        'cornell', 'unionville', 'milliken', 'thornhill', 'richmond hill', 
-        'scarborough', 'pickering', 'ajax', 'whitby', 'oshawa', 'newmarket',
-        'aurora', 'stouffville', 'uxbridge', 'beaverton'
-      ];
-      
-      const nearbyMatches = filteredNames.filter(name => {
-        const lowerName = name.toLowerCase();
-        return markhamAreaCommunities.some(community => 
-          lowerName.includes(community) || community.includes(lowerName)
-        );
-      });
-      
-      if (nearbyMatches.length > 0) {
-        return {
-          found: true,
-          community: nearbyMatches[0],
-          method: 'markham_area_match',
-          allCandidates: nearbyMatches
-        };
-      }
-      
-      // If no specific matches, return the best filtered candidates
+      // Return the first valid community name found
       if (filteredNames.length > 0) {
-        // Prefer single-word communities
-        const singleWord = filteredNames.find(name => !/\s/.test(name));
-        if (singleWord) {
-          return {
-            found: true,
-            community: singleWord,
-            method: 'single_word_community',
-            allCandidates: filteredNames
-          };
-        }
-        
         return {
           found: true,
           community: filteredNames[0],
-          method: 'best_candidate',
-          allCandidates: filteredNames
+          method: 'page_text_extraction',
+          allCandidates: filteredNames,
+          url: url
         };
       }
-      
-      // Debug info if nothing found - get elements for debugging
-      const canvasElements = Array.from(document.querySelectorAll('canvas'));
-      const svgElements = Array.from(document.querySelectorAll('svg'));
       
       return {
         found: false,
         community: null,
-        method: 'enhanced_debug',
-        canvasCount: canvasElements.length,
-        svgCount: svgElements.length,
-        overlayCount: overlayElements.length,
-        allNamesFound: Array.from(communityNames),
-        totalElementsChecked: allElements.length
+        method: 'no_community_found',
+        allTextFound: Array.from(communityNames),
+        url: url
       };
     });
     
@@ -263,34 +168,29 @@ async function extractMLSCommunityFast(page, address) {
         community: communityResult.community,
         method: communityResult.method,
         allCandidates: communityResult.allCandidates || [],
-        processingTime: 'under_10_seconds',
-        url: page.url(),
+        url: communityResult.url,
         timestamp: new Date().toISOString()
       };
     } else {
       return {
         success: false,
-        error: 'No community name detected after enhanced processing',
+        error: 'No community name detected from the page elements',
         address: address,
-        method: communityResult.method || 'unknown',
+        method: communityResult.method,
         debugInfo: {
           allTextFound: communityResult.allTextFound || [],
-          totalElementsChecked: communityResult.totalElementsChecked || 0,
-          textNodesFound: communityResult.textNodesFound || 0,
-          canvasCount: communityResult.canvasCount || 0,
-          svgCount: communityResult.svgCount || 0
+          url: communityResult.url
         },
-        processingTime: 'under_10_seconds',
-        url: page.url(),
+        url: communityResult.url,
         timestamp: new Date().toISOString()
       };
     }
     
   } catch (error) {
-    console.error('Fast MLS extraction error:', error);
+    console.error('MLS extraction error:', error);
     return {
       success: false,
-      error: `Fast processing failed: ${error.message}`,
+      error: `MLS processing failed: ${error.message}`,
       address: address,
       timestamp: new Date().toISOString()
     };
@@ -301,9 +201,11 @@ async function extractMLSCommunityFast(page, address) {
 async function extractHouseSigmaChartData(page, url) {
   const chartApiData = [];
   
+  // Set up response monitoring for chart API data
   page.on('response', async (response) => {
     const responseUrl = response.url();
     
+    // Capture the specific chart API endpoint
     if (responseUrl.includes('/api/stats/trend/chart')) {
       try {
         const text = await response.text();
@@ -325,11 +227,14 @@ async function extractHouseSigmaChartData(page, url) {
   });
   
   try {
+    // Navigate to the market trends page
     console.log('Navigating to market trends page');
     await page.goto(url, { waitUntil: 'networkidle' });
     
+    // Wait for API calls to complete
     await page.waitForTimeout(10000);
     
+    // Check if authentication is required
     const needsAuth = await page.evaluate(() => {
       return document.querySelectorAll('.blur-light, .blur, .auth-btn, [class*="login"]').length > 0;
     });
@@ -337,9 +242,11 @@ async function extractHouseSigmaChartData(page, url) {
     if (needsAuth) {
       console.log('Authentication required - attempting login');
       
+      // Navigate to login page
       await page.goto('https://housesigma.com/web/en/signin', { waitUntil: 'networkidle' });
       await page.waitForTimeout(3000);
       
+      // Fill login form
       const loginSuccess = await page.evaluate(() => {
         const inputs = document.querySelectorAll('input');
         let emailInput = null;
@@ -363,6 +270,7 @@ async function extractHouseSigmaChartData(page, url) {
           passwordInput.value = '1856HS!';
           passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
           
+          // Submit form
           const submitButton = document.querySelector('button[type="submit"], input[type="submit"]') || 
                              Array.from(document.querySelectorAll('button')).find(btn => 
                                  btn.textContent.toLowerCase().includes('sign in') || 
@@ -378,11 +286,14 @@ async function extractHouseSigmaChartData(page, url) {
       
       if (loginSuccess) {
         await page.waitForTimeout(5000);
+        
+        // Navigate back to market trends page after login
         await page.goto(url, { waitUntil: 'networkidle' });
         await page.waitForTimeout(10000);
       }
     }
     
+    // Return the chart data
     if (chartApiData.length > 0) {
       const latestChartData = chartApiData[chartApiData.length - 1];
       
@@ -417,7 +328,7 @@ async function extractHouseSigmaChartData(page, url) {
   }
 }
 
-// Define tools list
+// Define tools list response (updated with new tool)
 const toolsList = {
   tools: [
     {
@@ -505,8 +416,8 @@ const toolsList = {
       }
     },
     {
-      name: 'extract_mls_community_fast',
-      description: 'Ultra-fast MLS community detection for Toronto Real Estate Board addresses (under 10 seconds)',
+      name: 'extract_mls_community',
+      description: 'Extract community name from Toronto MLS map for a given address. Automatically handles checkbox selection, address search, and map zoom.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -533,6 +444,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case 'navigate_to_url':
         await currentPage.goto(args.url, { waitUntil: 'networkidle' });
+        // Wait for dynamic content to load
         await currentPage.waitForTimeout(3000);
         return {
           content: [
@@ -599,8 +511,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ]
         };
 
-      case 'extract_mls_community_fast':
-        const mlsResult = await extractMLSCommunityFast(currentPage, args.address);
+      case 'extract_mls_community':
+        const mlsResult = await extractMLSCommunity(currentPage, args.address);
         return {
           content: [
             {
@@ -632,6 +544,7 @@ async function handleToolsCall(request) {
     switch (name) {
       case 'navigate_to_url':
         await currentPage.goto(args.url, { waitUntil: 'networkidle' });
+        // Wait for dynamic content to load
         await currentPage.waitForTimeout(3000);
         return {
           content: [
@@ -698,8 +611,8 @@ async function handleToolsCall(request) {
           ]
         };
 
-      case 'extract_mls_community_fast':
-        const mlsResult = await extractMLSCommunityFast(currentPage, args.address);
+      case 'extract_mls_community':
+        const mlsResult = await extractMLSCommunity(currentPage, args.address);
         return {
           content: [
             {
@@ -720,8 +633,9 @@ async function handleToolsCall(request) {
 // SSE connection management
 const connections = new Map();
 
-// HTTP server
+// HTTP server for SSE
 const httpServer = http.createServer((req, res) => {
+  // Handle CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -734,19 +648,22 @@ const httpServer = http.createServer((req, res) => {
 
   console.log(`${req.method} ${req.url}`);
 
+  // Health check endpoint
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'healthy',
       service: 'playwright-mcp-server',
-      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'extract_housesigma_chart', 'extract_mls_community_fast'],
+      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'extract_housesigma_chart', 'extract_mls_community'],
       timestamp: new Date().toISOString()
     }));
     return;
   }
 
+  // MCP HTTP Streamable endpoint - supports both GET and POST
   if (req.url === '/mcp' || req.url === '/') {
     if (req.method === 'GET') {
+      // GET request for SSE fallback (legacy compatibility)
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -759,6 +676,7 @@ const httpServer = http.createServer((req, res) => {
       console.log(`New SSE connection: ${connectionId}`);
       connections.set(connectionId, res);
 
+      // Send endpoint event for legacy SSE clients
       res.write(`data: /mcp\n\n`);
 
       req.on('close', () => {
@@ -770,13 +688,14 @@ const httpServer = http.createServer((req, res) => {
     }
 
     if (req.method === 'POST') {
+      // HTTP Streamable transport - modern MCP
       let body = '';
       req.on('data', chunk => {
         body += chunk.toString();
       });
 
       req.on('end', async () => {
-        let request;
+        let request; // Declare request in the correct scope
         try {
           console.log('Received MCP Streamable request:', body);
           request = JSON.parse(body);
@@ -784,8 +703,10 @@ const httpServer = http.createServer((req, res) => {
           let response;
           let sessionId;
           
+          // Handle MCP JSON-RPC requests
           if (request.jsonrpc === '2.0') {
             if (request.method === 'initialize') {
+              // Generate session ID for stateful sessions
               sessionId = Math.random().toString(36).substring(2, 15);
               
               response = {
@@ -805,9 +726,10 @@ const httpServer = http.createServer((req, res) => {
                 }
               };
             } else if (request.method === 'notifications/initialized') {
+              // Handle initialization notification (no response needed)
               console.log('Client initialized');
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end();
+              res.end(); // No response body for notifications
               return;
             } else if (request.method === 'tools/list') {
               const toolsResponse = await handleToolsList();
@@ -835,11 +757,13 @@ const httpServer = http.createServer((req, res) => {
               };
             }
             
+            // Set headers for HTTP Streamable
             const headers = {
               'Content-Type': 'application/json',
               'Access-Control-Allow-Origin': '*'
             };
             
+            // Add session ID if this is initialization
             if (sessionId) {
               headers['Mcp-Session-Id'] = sessionId;
             }
@@ -868,6 +792,7 @@ const httpServer = http.createServer((req, res) => {
     }
   }
 
+  // 404 for other routes
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not Found');
 });
@@ -888,5 +813,5 @@ httpServer.listen(PORT, () => {
   console.log(`HTTP Streamable endpoint: https://playwright-mcp-server.onrender.com/mcp`);
   console.log(`Legacy SSE endpoint: https://playwright-mcp-server.onrender.com/mcp (GET)`);
   console.log(`Health check endpoint: https://playwright-mcp-server.onrender.com/health`);
-  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, extract_housesigma_chart, extract_mls_community_fast');
+  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, extract_housesigma_chart, extract_mls_community');
 });
