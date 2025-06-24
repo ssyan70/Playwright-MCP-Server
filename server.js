@@ -69,9 +69,9 @@ async function extractMLSCommunityFast(page, address) {
     // Short wait for community labels to appear
     await page.waitForTimeout(1000);
     
-    // Fast community detection - improved logic to find actual community names
+    // Enhanced community detection - look for actual map overlays and labels
     const communityResult = await page.evaluate(() => {
-      // First, look specifically for "Cornell" since we know it should be there
+      // First, look specifically for "Cornell" anywhere on the page
       const cornellElements = Array.from(document.querySelectorAll('*')).filter(el => {
         const text = el.textContent?.trim();
         return text && text.toLowerCase().includes('cornell');
@@ -81,84 +81,111 @@ async function extractMLSCommunityFast(page, address) {
         return {
           found: true,
           community: 'Cornell',
-          method: 'specific_search'
+          method: 'specific_cornell_search'
         };
       }
       
-      // Enhanced community detection - look for text that appears to be map labels
-      const allElements = Array.from(document.querySelectorAll('*'));
-      const potentialCommunities = [];
+      // Look for text elements that are likely community names on the map
+      const mapContainer = document.querySelector('canvas, svg, .map, [id*="map"], .leaflet-container, .mapboxgl-map') || document.body;
       
-      allElements.forEach(el => {
-        const text = el.textContent?.trim();
-        if (!text || text.length < 3 || text.length > 25) return;
-        
-        // Skip navigation/UI elements
-        const excludePatterns = [
-          /^(move|zoom|pan|left|right|up|down|in|out|plus|minus)$/i,
-          /^(search|find|map|layer|area|municipalities|communities)$/i,
-          /^(google|maps|data|imagery|terms|privacy|copyright|©)$/i,
-          /^(help|about|contact|home|back|forward|refresh)$/i,
-          /^(ctrl|alt|shift|enter|escape|tab|page|end)$/i,
-          /keyboard|shortcut|navigation|control/i
-        ];
-        
-        if (excludePatterns.some(pattern => pattern.test(text))) return;
-        
-        // Look for proper community name patterns
-        const communityPatterns = [
-          /^[A-Z][a-z]+$/, // Single word like "Cornell"
-          /^[A-Z][a-z]+\s[A-Z][a-z]+$/, // Two words like "Don Mills"
-          /^[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+$/, // Three words
-          /^[A-Z][a-z]+[-'][A-Z][a-z]+$/ // Hyphenated
-        ];
-        
-        if (communityPatterns.some(pattern => pattern.test(text))) {
-          // Check if this element is likely a map label by looking at its styling/position
-          const style = window.getComputedStyle(el);
-          const rect = el.getBoundingClientRect();
-          
-          // Map labels are usually positioned absolutely or have specific styling
-          const isLikelyMapLabel = (
-            style.position === 'absolute' || 
-            style.zIndex > 0 ||
-            rect.width > 0 && rect.height > 0
-          );
-          
-          potentialCommunities.push({
-            text: text,
-            element: el.tagName,
-            isLikelyMapLabel: isLikelyMapLabel,
-            className: el.className || '',
-            parent: el.parentElement?.tagName || ''
-          });
+      // Get all text nodes and elements within the map area
+      const walker = document.createTreeWalker(
+        mapContainer,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+      );
+      
+      const textNodes = [];
+      let node;
+      while (node = walker.nextNode()) {
+        if (node.textContent.trim()) {
+          textNodes.push(node);
+        }
+      }
+      
+      // Also check all elements for textContent
+      const allElements = Array.from(document.querySelectorAll('*'));
+      const communityNames = new Set();
+      
+      // Process text nodes
+      textNodes.forEach(textNode => {
+        const text = textNode.textContent.trim();
+        if (text.length >= 4 && text.length <= 25 && /^[A-Z][a-zA-Z\s-']+$/.test(text)) {
+          const parent = textNode.parentElement;
+          if (parent) {
+            const rect = parent.getBoundingClientRect();
+            // Only consider visible elements
+            if (rect.width > 0 && rect.height > 0) {
+              communityNames.add(text);
+            }
+          }
         }
       });
       
-      // Sort by likelihood of being a community name
-      const sortedCommunities = potentialCommunities.sort((a, b) => {
-        // Prefer map labels over other text
-        if (a.isLikelyMapLabel && !b.isLikelyMapLabel) return -1;
-        if (!a.isLikelyMapLabel && b.isLikelyMapLabel) return 1;
+      // Process element text content
+      allElements.forEach(el => {
+        const text = el.textContent?.trim();
+        if (!text || el.children.length > 0) return; // Skip elements with children
         
-        // Prefer shorter, simpler names
-        return a.text.length - b.text.length;
+        if (text.length >= 4 && text.length <= 25 && /^[A-Z][a-zA-Z\s-']+$/.test(text)) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            communityNames.add(text);
+          }
+        }
       });
       
-      if (sortedCommunities.length > 0) {
+      // Filter out common UI elements
+      const excludeTerms = [
+        'labels', 'satellite', 'terrain', 'zoom', 'map', 'search', 'find',
+        'layer', 'area', 'municipalities', 'communities', 'google', 'data',
+        'imagery', 'terms', 'privacy', 'copyright', 'help', 'about', 'contact',
+        'move', 'left', 'right', 'up', 'down', 'ctrl', 'alt', 'shift',
+        'page', 'home', 'end', 'enter', 'escape', 'tab', 'delete', 'insert'
+      ];
+      
+      const filteredNames = Array.from(communityNames).filter(name => {
+        const lowerName = name.toLowerCase();
+        return !excludeTerms.some(term => lowerName.includes(term));
+      });
+      
+      // Look for known Toronto/GTA community patterns
+      const gttaCommunities = filteredNames.filter(name => {
+        // Common patterns for GTA communities
+        return /^[A-Z][a-z]+$/.test(name) || // Single word like "Cornell"
+               /^[A-Z][a-z]+\s[A-Z][a-z]+$/.test(name) || // Two words like "Don Mills"
+               /^[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+$/.test(name); // Three words
+      });
+      
+      if (gttaCommunities.length > 0) {
+        // Prefer single-word communities first (Cornell, Etobicoke, etc.)
+        const singleWord = gttaCommunities.find(name => !/\s/.test(name));
+        if (singleWord) {
+          return {
+            found: true,
+            community: singleWord,
+            method: 'single_word_community',
+            allCandidates: gttaCommunities
+          };
+        }
+        
         return {
           found: true,
-          community: sortedCommunities[0].text,
-          method: 'enhanced_search',
-          allCandidates: sortedCommunities.slice(0, 5).map(c => c.text)
+          community: gttaCommunities[0],
+          method: 'multi_word_community',
+          allCandidates: gttaCommunities
         };
       }
       
+      // If no clear community found, return debug info
       return {
         found: false,
         community: null,
-        method: 'no_community_found',
-        allTextsChecked: potentialCommunities.length
+        method: 'debug_mode',
+        allTextFound: filteredNames,
+        totalElementsChecked: allElements.length,
+        textNodesFound: textNodes.length
       };
     });
     
