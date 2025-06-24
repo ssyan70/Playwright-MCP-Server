@@ -278,6 +278,21 @@ const toolsList = {
       }
     },
     {
+      name: 'get_screenshot_url',
+      description: 'Capture screenshot and return a viewable data URL',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filename: {
+            type: 'string',
+            description: 'Optional filename for the screenshot (default: auto-generated)',
+            default: null
+          }
+        },
+        required: []
+      }
+    },
+    {
       name: 'extract_housesigma_chart',
       description: 'Extract chart data from HouseSigma market trends page with automatic authentication handling',
       inputSchema: {
@@ -372,6 +387,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           ]
         };
+
+      case 'get_screenshot_url':
+        const screenshotUrlResult = await captureScreenshot(currentPage, args.filename);
+        if (screenshotUrlResult.success) {
+          const dataUrl = `data:image/png;base64,${screenshotUrlResult.base64}`;
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ...screenshotUrlResult,
+                  dataUrl: dataUrl,
+                  viewInstructions: "Copy the dataUrl value and paste it into your browser address bar to view the image"
+                }, null, 2)
+              }
+            ]
+          };
+        } else {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(screenshotUrlResult, null, 2)
+              }
+            ]
+          };
+        }
+
 
       case 'extract_housesigma_chart':
         const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
@@ -516,7 +559,7 @@ const httpServer = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'healthy',
       service: 'playwright-mcp-server',
-      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'capture_screenshot', 'extract_housesigma_chart'],
+      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'capture_screenshot', 'get_screenshot_url', 'extract_housesigma_chart'],
       timestamp: new Date().toISOString()
     }));
     return;
@@ -675,5 +718,5 @@ httpServer.listen(PORT, () => {
   console.log(`HTTP Streamable endpoint: https://playwright-mcp-server.onrender.com/mcp`);
   console.log(`Legacy SSE endpoint: https://playwright-mcp-server.onrender.com/mcp (GET)`);
   console.log(`Health check endpoint: https://playwright-mcp-server.onrender.com/health`);
-  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, capture_screenshot, extract_housesigma_chart');
+  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, capture_screenshot, get_screenshot_url, extract_housesigma_chart');
 });
