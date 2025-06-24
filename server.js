@@ -113,6 +113,9 @@ async function extractMLSCommunityFast(page, address) {
     
     // Enhanced community detection - look for canvas/SVG text and map overlays
     const communityResult = await page.evaluate(() => {
+      // Initialize community names set
+      const communityNames = new Set();
+      
       // First, look specifically for "Cornell" anywhere on the page
       const cornellElements = Array.from(document.querySelectorAll('*')).filter(el => {
         const text = el.textContent?.trim();
@@ -148,7 +151,6 @@ async function extractMLSCommunityFast(page, address) {
       });
       
       // Look for community names in overlay elements
-      const communityNames = new Set();
       overlayElements.forEach(el => {
         const text = el.textContent?.trim();
         if (text && text.length >= 4 && text.length <= 25) {
@@ -238,7 +240,10 @@ async function extractMLSCommunityFast(page, address) {
         };
       }
       
-      // Debug info if nothing found
+      // Debug info if nothing found - get elements for debugging
+      const canvasElements = Array.from(document.querySelectorAll('canvas'));
+      const svgElements = Array.from(document.querySelectorAll('svg'));
+      
       return {
         found: false,
         community: null,
@@ -271,7 +276,9 @@ async function extractMLSCommunityFast(page, address) {
         debugInfo: {
           allTextFound: communityResult.allTextFound || [],
           totalElementsChecked: communityResult.totalElementsChecked || 0,
-          textNodesFound: communityResult.textNodesFound || 0
+          textNodesFound: communityResult.textNodesFound || 0,
+          canvasCount: communityResult.canvasCount || 0,
+          svgCount: communityResult.svgCount || 0
         },
         processingTime: 'under_10_seconds',
         url: page.url(),
@@ -498,20 +505,6 @@ const toolsList = {
       }
     },
     {
-      name: 'screenshot_mls_debug',
-      description: 'Take screenshots during MLS community detection process to debug what the browser sees',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          address: {
-            type: 'string',
-            description: 'The address to debug with screenshots'
-          }
-        },
-        required: ['address']
-      }
-    },
-    {
       name: 'extract_mls_community_fast',
       description: 'Ultra-fast MLS community detection for Toronto Real Estate Board addresses (under 10 seconds)',
       inputSchema: {
@@ -602,28 +595,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: JSON.stringify(chartResult, null, 2)
-            }
-          ]
-        };
-
-      case 'screenshot_mls_debug':
-        const debugResult = await screenshotMLSDebug(currentPage, args.address);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(debugResult, null, 2)
-            }
-          ]
-        };
-
-      case 'screenshot_mls_debug':
-        const screenshotResult = await screenshotMLSDebug(currentPage, args.address);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(screenshotResult, null, 2)
             }
           ]
         };
