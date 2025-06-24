@@ -1,120 +1,4 @@
-// Now look for community boundaries and labels after 8 zoom-outs
-    const communityInfo = await page.evaluate(() => {
-      // Look for text that might be community names
-      const allTextElements = Array.from(document.querySelectorAll('*')).filter(el => {
-        const text = el.textContent?.trim();
-        if (!text || text.length < 3 || text.length > 50) return false;
-        
-        // Skip common UI elements
-        const skipTexts = [
-          'search', 'find', 'map', 'zoom', 'layer', 'area', 'municipalities', 
-          'communities', 'mapquest', 'google', 'copyright', '©', 'terms',
-          'privacy', 'about', 'help', 'contact', 'home', 'back', 'forward',
-          'end', 'page', 'up', 'down', 'terrain', 'satellite', 'labels'
-        ];
-        
-        const lowerText = text.toLowerCase();
-        if (skipTexts.some(skip => lowerText.includes(skip))) return false;
-        
-        // Look for proper nouns (community names typically start with capital letters)
-        if (!/^[A-Z]/.test(text)) return false;
-        
-        // Skip elements with children (we want text-only elements)
-        if (el.children.length > 0) return false;
-        
-        return true;
-      });
-      
-      const potentialCommunities = allTextElements.map(el => ({
-        text: el.textContent.trim(),
-        tagName: el.tagName,
-        className: el.className || '',
-        id: el.id || '',
-        parentTag: el.parentElement?.tagName || '',
-        parentClass: el.parentElement?.className || ''
-      }));
-      
-      // Look for dashed lines or boundaries (SVG paths, canvas, etc.)
-      const svgPaths = Array.from(document.querySelectorAll('path')).filter(path => {
-        const strokeDasharray = path.getAttribute('stroke-dasharray') || 
-                               window.getComputedStyle(path).strokeDasharray;
-        return strokeDasharray && strokeDasharray !== 'none';
-      });
-      
-      // Look for any elements with dashed styling
-      const dashedElements = Array.from(document.querySelectorAll('*')).filter(el => {
-        const style = window.getComputedStyle(el);
-        return (style.borderStyle && style.borderStyle.includes('dashed')) ||
-               (style.strokeDasharray && style.strokeDasharray !== 'none');
-      });
-      
-      return {
-        possibleCommunityNames: potentialCommunities.slice(0, 30), // Increased limit
-        dashedPaths: svgPaths.length,
-        dashedElements: dashedElements.length,
-        hasMap: !!document.querySelector('canvas, svg, .leaflet-container, .mapboxgl-map, [id*="map"]'),
-        totalTextElements: allTextElements.length
-      };
-    });
-    
-    console.log('Community detection after 8 zoom-outs:', {
-      possibleCommunities: communityInfo.possibleCommunityNames.length,
-      dashedPaths: communityInfo.dashedPaths,
-      dashedElements: communityInfo.dashedElements,
-      hasMap: communityInfo.hasMap
-    });
-    
-    // Enhanced community name detection
-    if (communityInfo.possibleCommunityNames.length > 0) {
-      // Filter for likely community names
-      const likelyCommunities = communityInfo.possibleCommunityNames.filter(item => {
-        const text = item.text;
-        
-        // Filter for likely community names
-        const communityPatterns = [
-          /^[A-Z][a-z]+$/, // Single word like "Cornell"
-          /^[A-Z][a-z]+\s[A-Z][a-z]+$/, // Two words like "Don Mills"
-          /^[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+$/, // Three words
-          /^[A-Z][a-z]+[-'][A-Z][a-z]+$/ // Hyphenated or apostrophe
-        ];
-        
-        // Exclude common UI/map elements
-        const excludeWords = [
-          'end', 'page', 'up', 'down', 'terrain', 'satellite', 'labels', 'map', 'zoom',
-          'street', 'road', 'avenue', 'north', 'south', 'east', 'west', 'ctrl', 'alt',
-          'shift', 'enter', 'escape', 'tab', 'home', 'delete', 'insert', 'print',
-          'google', 'maps', 'data', 'imagery', 'terms', 'report', 'error', 'help'
-        ];
-        
-        return /^[A-Z][a-zA-Z\s\-']+$/.test(text) && 
-               text.length >= 3 && 
-               text.length <= 30 &&
-               !excludeWords.includes(text.toLowerCase()) &&
-               communityPatterns.some(pattern => pattern.test(text));
-      });
-      
-      if (likelyCommunities.length > 0) {
-        console.log('Found likely community names:', likelyCommunities.map(c => c.text));
-        
-        // Return the most likely community name (first one that matches our criteria)
-        const communityName = likelyCommunities[0].text;
-        
-        return {
-          success: true,
-          address: address,
-          community: communityName,
-          allPossibleCommunities: likelyCommunities,
-          zoomLevel: 8, // Fixed at 8 zoom-outs
-          boundaryElements: communityInfo.dashedPaths + communityInfo.dashedElements,
-          searchPerformed: true,
-          markersFound: mapMarkers.length,
-          checkboxStatus: finalCheckedStatus,
-          searchSuccessInfo: searchSuccess,
-          url: page.url(),
-          timestamp: new Date().toISOString()
-        };
-      }
-    }import http from 'http';
+import http from 'http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
@@ -149,8 +33,8 @@ async function extractMLSCommunity(page, address) {
     
     // Navigate to the Toronto MLS Communities map with shorter timeout
     await page.goto('https://www.torontomls.net/Communities/map.html', { 
-      waitUntil: 'domcontentloaded', // Faster than 'networkidle'
-      timeout: 15000 // Reduced from 30000
+      waitUntil: 'domcontentloaded',
+      timeout: 15000
     });
     
     // Shorter initial wait
@@ -189,7 +73,7 @@ async function extractMLSCommunity(page, address) {
       }
     }
     
-    // Extra wait for checkbox states to update (reduced)
+    // Extra wait for checkbox states to update
     await page.waitForTimeout(1500);
     
     // Verify checkboxes are checked and retry if needed
@@ -234,7 +118,7 @@ async function extractMLSCommunity(page, address) {
     
     console.log('Final checkbox status:', finalCheckedStatus);
     
-    // Wait a moment for any dynamic updates (reduced)
+    // Wait a moment for any dynamic updates
     await page.waitForTimeout(1000);
     
     // Find the search input field using the exact ID from DOM inspection
@@ -272,7 +156,7 @@ async function extractMLSCommunity(page, address) {
       }
     }
     
-    // Wait for search results and verify the search worked (reduced timeout)
+    // Wait for search results and verify the search worked
     await page.waitForTimeout(5000);
     
     // Check if search was successful by looking for map changes
@@ -293,7 +177,7 @@ async function extractMLSCommunity(page, address) {
       return {
         markersFound: markers.length,
         searchResultsFound: searchResults.length,
-        hasLocationChange: true // Assume location changed for now
+        hasLocationChange: true
       };
     });
     
@@ -375,21 +259,140 @@ async function extractMLSCommunity(page, address) {
     console.log('Waiting for community boundaries to render...');
     await page.waitForTimeout(3000);
     
-    // If we couldn't find community names through zooming, return detailed debug info
+    // Now look for community boundaries and labels after 8 zoom-outs
+    const communityInfo = await page.evaluate(() => {
+      // Look for text that might be community names
+      const allTextElements = Array.from(document.querySelectorAll('*')).filter(el => {
+        const text = el.textContent?.trim();
+        if (!text || text.length < 3 || text.length > 50) return false;
+        
+        // Skip common UI elements
+        const skipTexts = [
+          'search', 'find', 'map', 'zoom', 'layer', 'area', 'municipalities', 
+          'communities', 'mapquest', 'google', 'copyright', '©', 'terms',
+          'privacy', 'about', 'help', 'contact', 'home', 'back', 'forward',
+          'end', 'page', 'up', 'down', 'terrain', 'satellite', 'labels'
+        ];
+        
+        const lowerText = text.toLowerCase();
+        if (skipTexts.some(skip => lowerText.includes(skip))) return false;
+        
+        // Look for proper nouns (community names typically start with capital letters)
+        if (!/^[A-Z]/.test(text)) return false;
+        
+        // Skip elements with children (we want text-only elements)
+        if (el.children.length > 0) return false;
+        
+        return true;
+      });
+      
+      const potentialCommunities = allTextElements.map(el => ({
+        text: el.textContent.trim(),
+        tagName: el.tagName,
+        className: el.className || '',
+        id: el.id || '',
+        parentTag: el.parentElement?.tagName || '',
+        parentClass: el.parentElement?.className || ''
+      }));
+      
+      // Look for dashed lines or boundaries (SVG paths, canvas, etc.)
+      const svgPaths = Array.from(document.querySelectorAll('path')).filter(path => {
+        const strokeDasharray = path.getAttribute('stroke-dasharray') || 
+                               window.getComputedStyle(path).strokeDasharray;
+        return strokeDasharray && strokeDasharray !== 'none';
+      });
+      
+      // Look for any elements with dashed styling
+      const dashedElements = Array.from(document.querySelectorAll('*')).filter(el => {
+        const style = window.getComputedStyle(el);
+        return (style.borderStyle && style.borderStyle.includes('dashed')) ||
+               (style.strokeDasharray && style.strokeDasharray !== 'none');
+      });
+      
+      return {
+        possibleCommunityNames: potentialCommunities.slice(0, 30),
+        dashedPaths: svgPaths.length,
+        dashedElements: dashedElements.length,
+        hasMap: !!document.querySelector('canvas, svg, .leaflet-container, .mapboxgl-map, [id*="map"]'),
+        totalTextElements: allTextElements.length
+      };
+    });
+    
+    console.log('Community detection after 8 zoom-outs:', {
+      possibleCommunities: communityInfo.possibleCommunityNames.length,
+      dashedPaths: communityInfo.dashedPaths,
+      dashedElements: communityInfo.dashedElements,
+      hasMap: communityInfo.hasMap
+    });
+    
+    // Enhanced community name detection
+    if (communityInfo.possibleCommunityNames.length > 0) {
+      // Filter for likely community names
+      const likelyCommunities = communityInfo.possibleCommunityNames.filter(item => {
+        const text = item.text;
+        
+        // Filter for likely community names
+        const communityPatterns = [
+          /^[A-Z][a-z]+$/, // Single word like "Cornell"
+          /^[A-Z][a-z]+\s[A-Z][a-z]+$/, // Two words like "Don Mills"
+          /^[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+$/, // Three words
+          /^[A-Z][a-z]+[-'][A-Z][a-z]+$/ // Hyphenated or apostrophe
+        ];
+        
+        // Exclude common UI/map elements
+        const excludeWords = [
+          'end', 'page', 'up', 'down', 'terrain', 'satellite', 'labels', 'map', 'zoom',
+          'street', 'road', 'avenue', 'north', 'south', 'east', 'west', 'ctrl', 'alt',
+          'shift', 'enter', 'escape', 'tab', 'home', 'delete', 'insert', 'print',
+          'google', 'maps', 'data', 'imagery', 'terms', 'report', 'error', 'help'
+        ];
+        
+        return /^[A-Z][a-zA-Z\s\-']+$/.test(text) && 
+               text.length >= 3 && 
+               text.length <= 30 &&
+               !excludeWords.includes(text.toLowerCase()) &&
+               communityPatterns.some(pattern => pattern.test(text));
+      });
+      
+      if (likelyCommunities.length > 0) {
+        console.log('Found likely community names:', likelyCommunities.map(c => c.text));
+        
+        // Return the most likely community name (first one that matches our criteria)
+        const communityName = likelyCommunities[0].text;
+        
+        return {
+          success: true,
+          address: address,
+          community: communityName,
+          allPossibleCommunities: likelyCommunities,
+          zoomLevel: 8,
+          boundaryElements: communityInfo.dashedPaths + communityInfo.dashedElements,
+          searchPerformed: true,
+          markersFound: mapMarkers.length,
+          checkboxStatus: finalCheckedStatus,
+          searchSuccessInfo: searchSuccess,
+          url: page.url(),
+          timestamp: new Date().toISOString()
+        };
+      }
+    }
+    
+    // If we couldn't find community names after 8 zoom-outs, return detailed debug info
     return {
       success: false,
-      error: 'Could not identify community name after zooming out',
+      error: 'Could not identify community name after 8 zoom-outs',
       address: address,
       searchPerformed: true,
       markersFound: mapMarkers.length,
-      zoomAttempts: zoomAttempts,
-      checkboxStatus: checkedStatus,
+      zoomLevel: 8,
+      checkboxStatus: finalCheckedStatus,
       url: page.url(),
       timestamp: new Date().toISOString(),
       debugInfo: {
-        checkboxStatus,
+        checkboxStatus: finalCheckedStatus,
         mapMarkers,
-        lastCommunityInfo: communityInfo
+        communityInfo,
+        searchSuccessInfo: searchSuccess
       }
     };
     
@@ -652,7 +655,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case 'navigate_to_url':
         await currentPage.goto(args.url, { waitUntil: 'networkidle' });
-        // Wait for dynamic content to load
         await currentPage.waitForTimeout(3000);
         return {
           content: [
@@ -752,7 +754,6 @@ async function handleToolsCall(request) {
     switch (name) {
       case 'navigate_to_url':
         await currentPage.goto(args.url, { waitUntil: 'networkidle' });
-        // Wait for dynamic content to load
         await currentPage.waitForTimeout(3000);
         return {
           content: [
@@ -903,7 +904,7 @@ const httpServer = http.createServer((req, res) => {
       });
 
       req.on('end', async () => {
-        let request; // Declare request in the correct scope
+        let request;
         try {
           console.log('Received MCP Streamable request:', body);
           request = JSON.parse(body);
@@ -937,7 +938,7 @@ const httpServer = http.createServer((req, res) => {
               // Handle initialization notification (no response needed)
               console.log('Client initialized');
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(); // No response body for notifications
+              res.end();
               return;
             } else if (request.method === 'tools/list') {
               const toolsResponse = await handleToolsList();
