@@ -513,6 +513,20 @@ const toolsList = {
         },
         required: ['address']
       }
+    },
+    {
+      name: 'extract_mls_community_fast',
+      description: 'Ultra-fast MLS community detection for Toronto Real Estate Board addresses (under 10 seconds)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          address: {
+            type: 'string',
+            description: 'The address to look up (e.g., "40 sunnyside hill rd, markham on")'
+          }
+        },
+        required: ['address']
+      }
     }
   ]
 };
