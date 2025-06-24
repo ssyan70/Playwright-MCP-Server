@@ -59,18 +59,28 @@ async function extractMLSCommunityFast(page, address) {
     // Wait for search to complete
     await page.waitForTimeout(2000);
     
-    // Fast zoom-out sequence - exactly 8 times using mouse wheel (as you tested)
-    console.log('Fast zoom sequence (8x) using mouse wheel...');
+    // Fast zoom-out sequence - try clicking zoom out button instead of mouse wheel
+    console.log('Fast zoom sequence (8x) using zoom out button...');
     for (let i = 0; i < 8; i++) {
-      // Mouse wheel scroll out (positive deltaY = zoom out)
-      await page.mouse.wheel(0, 300);
-      await page.waitForTimeout(200);
-      console.log(`Zoom ${i + 1}/8 completed`);
+      try {
+        // Try to click the zoom out button
+        await page.click('button[aria-label="Zoom out"], button[title="Zoom out"], .gm-control-active[aria-label="Zoom out"]');
+        console.log(`Zoom ${i + 1}/8 completed via button click`);
+      } catch (e) {
+        try {
+          // Fallback to mouse wheel if button click fails
+          await page.mouse.wheel(0, 300);
+          console.log(`Zoom ${i + 1}/8 completed via mouse wheel (fallback)`);
+        } catch (e2) {
+          console.log(`Zoom ${i + 1}/8 failed`);
+        }
+      }
+      await page.waitForTimeout(300); // Slightly longer wait between zooms
     }
     
     // Short wait for community labels to appear
     console.log('Waiting for community labels to render...');
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(2000); // Increased from 1000ms
     
     // Quick check of what's visible before detailed analysis
     const quickCheck = await page.evaluate(() => {
@@ -90,7 +100,7 @@ async function extractMLSCommunityFast(page, address) {
     
     console.log('Quick visibility check:', quickCheck);
     
-    // Enhanced community detection - look for actual map overlays and labels
+    // Enhanced community detection - look for canvas/SVG text and map overlays
     const communityResult = await page.evaluate(() => {
       // First, look specifically for "Cornell" anywhere on the page
       const cornellElements = Array.from(document.querySelectorAll('*')).filter(el => {
@@ -106,37 +116,34 @@ async function extractMLSCommunityFast(page, address) {
         };
       }
       
-      // Look for text elements that are likely community names on the map
-      const mapContainer = document.querySelector('canvas, svg, .map, [id*="map"], .leaflet-container, .mapboxgl-map') || document.body;
+      // Look for Google Maps style labels and overlays
+      const gmLabels = Array.from(document.querySelectorAll('[class*="gm"], [class*="map"], [class*="label"], [data-value], [title]')).filter(el => {
+        const text = el.textContent?.trim() || el.title || el.getAttribute('data-value') || '';
+        return text.length >= 4 && text.length <= 25 && /^[A-Z][a-zA-Z\s-']+$/.test(text);
+      });
       
-      // Get all text nodes and elements within the map area
-      const walker = document.createTreeWalker(
-        mapContainer,
-        NodeFilter.SHOW_TEXT,
-        null,
-        false
-      );
-      
-      const textNodes = [];
-      let node;
-      while (node = walker.nextNode()) {
-        if (node.textContent.trim()) {
-          textNodes.push(node);
+      gmLabels.forEach(el => {
+        const text = el.textContent?.trim() || el.title || el.getAttribute('data-value') || '';
+        if (text) {
+          communityNames.add(text);
         }
-      }
+      });
       
-      // Also check all elements for textContent
-      const allElements = Array.from(document.querySelectorAll('*'));
+      // Check for any overlays or absolutely positioned elements that might be labels
+      const overlayElements = Array.from(document.querySelectorAll('*')).filter(el => {
+        const style = window.getComputedStyle(el);
+        return style.position === 'absolute' || style.position === 'fixed' || 
+               parseInt(style.zIndex) > 0;
+      });
+      
+      // Look for community names in overlay elements
       const communityNames = new Set();
-      
-      // Process text nodes
-      textNodes.forEach(textNode => {
-        const text = textNode.textContent.trim();
-        if (text.length >= 4 && text.length <= 25 && /^[A-Z][a-zA-Z\s-']+$/.test(text)) {
-          const parent = textNode.parentElement;
-          if (parent) {
-            const rect = parent.getBoundingClientRect();
-            // Only consider visible elements
+      overlayElements.forEach(el => {
+        const text = el.textContent?.trim();
+        if (text && text.length >= 4 && text.length <= 25) {
+          // Check if it looks like a community name
+          if (/^[A-Z][a-zA-Z\s-']+$/.test(text)) {
+            const rect = el.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0) {
               communityNames.add(text);
             }
@@ -144,12 +151,16 @@ async function extractMLSCommunityFast(page, address) {
         }
       });
       
-      // Process element text content
+      // Also check all visible text elements regardless of positioning
+      const allElements = Array.from(document.querySelectorAll('*'));
       allElements.forEach(el => {
-        const text = el.textContent?.trim();
-        if (!text || el.children.length > 0) return; // Skip elements with children
+        if (el.children.length > 0) return; // Skip parent elements
         
-        if (text.length >= 4 && text.length <= 25 && /^[A-Z][a-zA-Z\s-']+$/.test(text)) {
+        const text = el.textContent?.trim();
+        if (!text || text.length < 4 || text.length > 25) return;
+        
+        // Check if it's a potential community name
+        if (/^[A-Z][a-zA-Z\s-']+$/.test(text)) {
           const rect = el.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
             communityNames.add(text);
@@ -157,13 +168,14 @@ async function extractMLSCommunityFast(page, address) {
         }
       });
       
-      // Filter out common UI elements
+      // Filter out common UI elements and map controls
       const excludeTerms = [
-        'labels', 'satellite', 'terrain', 'zoom', 'map', 'search', 'find',
-        'layer', 'area', 'municipalities', 'communities', 'google', 'data',
-        'imagery', 'terms', 'privacy', 'copyright', 'help', 'about', 'contact',
-        'move', 'left', 'right', 'up', 'down', 'ctrl', 'alt', 'shift',
-        'page', 'home', 'end', 'enter', 'escape', 'tab', 'delete', 'insert'
+        'keyboard', 'shortcuts', 'labels', 'satellite', 'terrain', 'zoom', 'map', 
+        'search', 'find', 'layer', 'area', 'municipalities', 'communities', 
+        'google', 'data', 'imagery', 'terms', 'privacy', 'copyright', 'help', 
+        'about', 'contact', 'move', 'left', 'right', 'up', 'down', 'ctrl', 
+        'alt', 'shift', 'page', 'home', 'end', 'enter', 'escape', 'tab', 
+        'delete', 'insert', 'view', 'ytreb', 'treb', 'mapart'
       ];
       
       const filteredNames = Array.from(communityNames).filter(name => {
@@ -171,42 +183,60 @@ async function extractMLSCommunityFast(page, address) {
         return !excludeTerms.some(term => lowerName.includes(term));
       });
       
-      // Look for known Toronto/GTA community patterns
-      const gttaCommunities = filteredNames.filter(name => {
-        // Common patterns for GTA communities
-        return /^[A-Z][a-z]+$/.test(name) || 
-               /^[A-Z][a-z]+\s[A-Z][a-z]+$/.test(name) || 
-               /^[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+$/.test(name);
+      // Look specifically for known GTA communities near Markham
+      const markhamAreaCommunities = [
+        'cornell', 'unionville', 'milliken', 'thornhill', 'richmond hill', 
+        'scarborough', 'pickering', 'ajax', 'whitby', 'oshawa', 'newmarket',
+        'aurora', 'stouffville', 'uxbridge', 'beaverton'
+      ];
+      
+      const nearbyMatches = filteredNames.filter(name => {
+        const lowerName = name.toLowerCase();
+        return markhamAreaCommunities.some(community => 
+          lowerName.includes(community) || community.includes(lowerName)
+        );
       });
       
-      if (gttaCommunities.length > 0) {
-        // Prefer single-word communities first (Cornell, Etobicoke, etc.)
-        const singleWord = gttaCommunities.find(name => !/\s/.test(name));
+      if (nearbyMatches.length > 0) {
+        return {
+          found: true,
+          community: nearbyMatches[0],
+          method: 'markham_area_match',
+          allCandidates: nearbyMatches
+        };
+      }
+      
+      // If no specific matches, return the best filtered candidates
+      if (filteredNames.length > 0) {
+        // Prefer single-word communities
+        const singleWord = filteredNames.find(name => !/\s/.test(name));
         if (singleWord) {
           return {
             found: true,
             community: singleWord,
             method: 'single_word_community',
-            allCandidates: gttaCommunities
+            allCandidates: filteredNames
           };
         }
         
         return {
           found: true,
-          community: gttaCommunities[0],
-          method: 'multi_word_community',
-          allCandidates: gttaCommunities
+          community: filteredNames[0],
+          method: 'best_candidate',
+          allCandidates: filteredNames
         };
       }
       
-      // If no clear community found, return debug info
+      // Debug info if nothing found
       return {
         found: false,
         community: null,
-        method: 'debug_mode',
-        allTextFound: filteredNames,
-        totalElementsChecked: allElements.length,
-        textNodesFound: textNodes.length
+        method: 'enhanced_debug',
+        canvasCount: canvasElements.length,
+        svgCount: svgElements.length,
+        overlayCount: overlayElements.length,
+        allNamesFound: Array.from(communityNames),
+        totalElementsChecked: allElements.length
       };
     });
     
