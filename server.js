@@ -12,7 +12,7 @@ let currentPage;
 async function initBrowser() {
   if (!browser) {
     browser = await puppeteer.launch({
-      headless: false,
+      headless: true,
       defaultViewport: { width: 1280, height: 720 },
       args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
@@ -230,7 +230,7 @@ async function handleToolsCall(name, args) {
   }
 }
 
-const server = new Server(
+const mcpServer = new Server(
   {
     name: 'playwright-web-automation',
     version: '1.0.0',
@@ -242,7 +242,7 @@ const server = new Server(
   }
 );
 
-server.setRequestHandler('initialize', async () => {
+mcpServer.setRequestHandler('initialize', async () => {
   console.log('Server initialized');
   await initBrowser();
   return {
@@ -257,7 +257,7 @@ server.setRequestHandler('initialize', async () => {
   };
 });
 
-server.setRequestHandler('tools/list', async () => {
+mcpServer.setRequestHandler('tools/list', async () => {
   return {
     tools: [
       {
@@ -388,7 +388,7 @@ server.setRequestHandler('tools/list', async () => {
   };
 });
 
-server.setRequestHandler('tools/call', async (request) => {
+mcpServer.setRequestHandler('tools/call', async (request) => {
   const { name, arguments: args } = request.params;
   
   try {
@@ -430,7 +430,7 @@ process.on('SIGINT', async () => {
 
 async function main() {
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await mcpServer.connect(transport);
   console.log('Playwright MCP Server running on stdio');
   console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, capture_screenshot, get_screenshot_url, extract_map_data, extract_housesigma_chart');
 }
