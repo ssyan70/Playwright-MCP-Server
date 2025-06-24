@@ -21,7 +21,7 @@ let page;
 async function ensureBrowser() {
   if (!browser) {
     browser = await chromium.launch({ 
-      headless: false,  // Show the browser window
+      headless: true,  // Show the browser window
       slowMo: 500,      // Slow down actions so you can see them
       devtools: false   // Don't open devtools by default
     });
