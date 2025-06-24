@@ -69,9 +69,9 @@ async function extractMLSCommunityFast(page, address) {
     // Short wait for community labels to appear
     await page.waitForTimeout(1000);
     
-    // Fast community detection - look for "Cornell" specifically first
+    // Fast community detection - improved logic to find actual community names
     const communityResult = await page.evaluate(() => {
-      // Quick search for Cornell specifically (since we know it should be there)
+      // First, look specifically for "Cornell" since we know it should be there
       const cornellElements = Array.from(document.querySelectorAll('*')).filter(el => {
         const text = el.textContent?.trim();
         return text && text.toLowerCase().includes('cornell');
@@ -85,28 +85,80 @@ async function extractMLSCommunityFast(page, address) {
         };
       }
       
-      // Quick fallback - look for any community-like text
-      const allTexts = Array.from(document.querySelectorAll('*'))
-        .map(el => el.textContent?.trim())
-        .filter(text => text && 
-                       text.length >= 3 && 
-                       text.length <= 20 && 
-                       /^[A-Z][a-zA-Z\s]+$/.test(text) &&
-                       !['Search', 'Find', 'Map', 'Zoom', 'Layer', 'Area', 'Municipalities', 'Communities'].includes(text)
-        );
+      // Enhanced community detection - look for text that appears to be map labels
+      const allElements = Array.from(document.querySelectorAll('*'));
+      const potentialCommunities = [];
       
-      // Return first reasonable community name
-      const likelyName = allTexts.find(text => 
-        !text.toLowerCase().includes('google') &&
-        !text.toLowerCase().includes('map') &&
-        text.length >= 4
-      );
+      allElements.forEach(el => {
+        const text = el.textContent?.trim();
+        if (!text || text.length < 3 || text.length > 25) return;
+        
+        // Skip navigation/UI elements
+        const excludePatterns = [
+          /^(move|zoom|pan|left|right|up|down|in|out|plus|minus)$/i,
+          /^(search|find|map|layer|area|municipalities|communities)$/i,
+          /^(google|maps|data|imagery|terms|privacy|copyright|©)$/i,
+          /^(help|about|contact|home|back|forward|refresh)$/i,
+          /^(ctrl|alt|shift|enter|escape|tab|page|end)$/i,
+          /keyboard|shortcut|navigation|control/i
+        ];
+        
+        if (excludePatterns.some(pattern => pattern.test(text))) return;
+        
+        // Look for proper community name patterns
+        const communityPatterns = [
+          /^[A-Z][a-z]+$/, // Single word like "Cornell"
+          /^[A-Z][a-z]+\s[A-Z][a-z]+$/, // Two words like "Don Mills"
+          /^[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+$/, // Three words
+          /^[A-Z][a-z]+[-'][A-Z][a-z]+$/ // Hyphenated
+        ];
+        
+        if (communityPatterns.some(pattern => pattern.test(text))) {
+          // Check if this element is likely a map label by looking at its styling/position
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          
+          // Map labels are usually positioned absolutely or have specific styling
+          const isLikelyMapLabel = (
+            style.position === 'absolute' || 
+            style.zIndex > 0 ||
+            rect.width > 0 && rect.height > 0
+          );
+          
+          potentialCommunities.push({
+            text: text,
+            element: el.tagName,
+            isLikelyMapLabel: isLikelyMapLabel,
+            className: el.className || '',
+            parent: el.parentElement?.tagName || ''
+          });
+        }
+      });
+      
+      // Sort by likelihood of being a community name
+      const sortedCommunities = potentialCommunities.sort((a, b) => {
+        // Prefer map labels over other text
+        if (a.isLikelyMapLabel && !b.isLikelyMapLabel) return -1;
+        if (!a.isLikelyMapLabel && b.isLikelyMapLabel) return 1;
+        
+        // Prefer shorter, simpler names
+        return a.text.length - b.text.length;
+      });
+      
+      if (sortedCommunities.length > 0) {
+        return {
+          found: true,
+          community: sortedCommunities[0].text,
+          method: 'enhanced_search',
+          allCandidates: sortedCommunities.slice(0, 5).map(c => c.text)
+        };
+      }
       
       return {
-        found: !!likelyName,
-        community: likelyName || null,
-        method: 'general_search',
-        allTextsFound: allTexts.length
+        found: false,
+        community: null,
+        method: 'no_community_found',
+        allTextsChecked: potentialCommunities.length
       };
     });
     
