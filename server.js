@@ -516,33 +516,6 @@ async function handleToolsCall(request) {
           ]
         };
 
-      case 'get_screenshot_url':
-        const screenshotUrlResult = await captureScreenshot(currentPage, args.filename);
-        if (screenshotUrlResult.success) {
-          const dataUrl = `data:image/png;base64,${screenshotUrlResult.base64}`;
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  ...screenshotUrlResult,
-                  dataUrl: dataUrl,
-                  viewInstructions: "Copy the dataUrl value and paste it into your browser address bar to view the image"
-                }, null, 2)
-              }
-            ]
-          };
-        } else {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(screenshotUrlResult, null, 2)
-              }
-            ]
-          ];
-        }
-
       case 'extract_housesigma_chart':
         const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
         return {
