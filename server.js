@@ -62,12 +62,21 @@ async function extractMLSCommunity(page, address) {
           await page.check(`input[name="${checkbox.name}"]`);
           console.log(`✓ Checked ${checkbox.label} checkbox by name (${checkbox.name})`);
         } catch (e2) {
-          console.log(`⚠️ Could not check ${checkbox.label} checkbox: ${e.message}`);
+          try {
+            // Force click the checkbox if check() fails
+            await page.click(`#${checkbox.id}`);
+            console.log(`✓ Force-clicked ${checkbox.label} checkbox (${checkbox.id})`);
+          } catch (e3) {
+            console.log(`⚠️ Could not check ${checkbox.label} checkbox: ${e.message}`);
+          }
         }
       }
     }
     
-    // Verify checkboxes are checked
+    // Extra wait for checkbox states to update
+    await page.waitForTimeout(3000);
+    
+    // Verify checkboxes are checked and retry if needed
     const checkedStatus = await page.evaluate(() => {
       return {
         area: document.getElementById('arealayer')?.checked || false,
@@ -76,7 +85,38 @@ async function extractMLSCommunity(page, address) {
       };
     });
     
-    console.log('Checkbox status:', checkedStatus);
+    console.log('Initial checkbox status:', checkedStatus);
+    
+    // Force-check any unchecked boxes
+    if (!checkedStatus.communities) {
+      try {
+        await page.evaluate(() => {
+          const commCheckbox = document.getElementById('commlayer');
+          if (commCheckbox && !commCheckbox.checked) {
+            commCheckbox.checked = true;
+            commCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            // Try to trigger the onclick function if it exists
+            if (commCheckbox.onclick) {
+              commCheckbox.onclick();
+            }
+          }
+        });
+        console.log('✓ Force-enabled Communities checkbox via JavaScript');
+      } catch (e) {
+        console.log('⚠️ Could not force-enable Communities checkbox');
+      }
+    }
+    
+    // Final verification
+    const finalCheckedStatus = await page.evaluate(() => {
+      return {
+        area: document.getElementById('arealayer')?.checked || false,
+        municipalities: document.getElementById('munilayer')?.checked || false,
+        communities: document.getElementById('commlayer')?.checked || false
+      };
+    });
+    
+    console.log('Final checkbox status:', finalCheckedStatus);
     
     // Wait a moment for any dynamic updates
     await page.waitForTimeout(2000);
@@ -116,8 +156,49 @@ async function extractMLSCommunity(page, address) {
       }
     }
     
-    // Wait for search results (red pin) to appear
+    // Wait for search results and verify the search worked
     await page.waitForTimeout(8000);
+    
+    // Check if search was successful by looking for map changes
+    const searchSuccess = await page.evaluate(() => {
+      // Look for any markers, pins, or location indicators
+      const markers = document.querySelectorAll(
+        '.marker, .pin, .map-marker, [class*="marker"], [class*="pin"], ' +
+        'img[src*="marker"], img[src*="pin"], svg circle, svg path, ' +
+        '.leaflet-marker-icon, .gm-marker, [title*="marker"], [title*="pin"]'
+      );
+      
+      // Also check for any elements that might indicate a search result
+      const searchResults = document.querySelectorAll(
+        '[class*="result"], [class*="location"], [class*="address"], ' +
+        '[id*="result"], [id*="location"], [id*="address"]'
+      );
+      
+      return {
+        markersFound: markers.length,
+        searchResultsFound: searchResults.length,
+        hasLocationChange: true // Assume location changed for now
+      };
+    });
+    
+    console.log('Search success check:', searchSuccess);
+    
+    if (searchSuccess.markersFound === 0 && searchSuccess.searchResultsFound === 0) {
+      // Try alternative search methods
+      console.log('No markers found, trying alternative search approach...');
+      
+      // Clear and re-enter the address
+      await page.fill(`#${searchInputId}`, '');
+      await page.waitForTimeout(1000);
+      await page.fill(`#${searchInputId}`, address);
+      await page.waitForTimeout(1000);
+      
+      // Try pressing Enter multiple times
+      await page.press(`#${searchInputId}`, 'Enter');
+      await page.waitForTimeout(2000);
+      await page.press(`#${searchInputId}`, 'Enter');
+      await page.waitForTimeout(3000);
+    }
     
     // Look for map markers or pins
     const mapMarkers = await page.evaluate(() => {
@@ -258,11 +339,7 @@ async function extractMLSCommunity(page, address) {
         const likelyCommunities = communityInfo.possibleCommunityNames.filter(item => {
           const text = item.text;
           
-          // Must be proper case and reasonable length
-          if (!/^[A-Z][a-zA-Z\s\-']+$/.test(text)) return false;
-          if (text.length < 3 || text.length > 30) return false;
-          
-          // Common community name patterns in Ontario
+          // Filter for likely community names
           const communityPatterns = [
             /^[A-Z][a-z]+$/, // Single word like "Cornell"
             /^[A-Z][a-z]+\s[A-Z][a-z]+$/, // Two words like "Don Mills"
@@ -270,7 +347,19 @@ async function extractMLSCommunity(page, address) {
             /^[A-Z][a-z]+[-'][A-Z][a-z]+$/ // Hyphenated or apostrophe
           ];
           
-          return communityPatterns.some(pattern => pattern.test(text));
+          // Exclude common UI/map elements
+          const excludeWords = [
+            'end', 'page', 'up', 'down', 'terrain', 'satellite', 'labels', 'map', 'zoom',
+            'street', 'road', 'avenue', 'north', 'south', 'east', 'west', 'ctrl', 'alt',
+            'shift', 'enter', 'escape', 'tab', 'home', 'delete', 'insert', 'print',
+            'google', 'maps', 'data', 'imagery', 'terms', 'report', 'error', 'help'
+          ];
+          
+          return /^[A-Z][a-zA-Z\s\-']+$/.test(text) && 
+                 text.length >= 3 && 
+                 text.length <= 30 &&
+                 !excludeWords.includes(text.toLowerCase()) &&
+                 communityPatterns.some(pattern => pattern.test(text));
         });
         
         if (likelyCommunities.length > 0) {
@@ -288,7 +377,8 @@ async function extractMLSCommunity(page, address) {
             boundaryElements: communityInfo.dashedPaths + communityInfo.dashedElements,
             searchPerformed: true,
             markersFound: mapMarkers.length,
-            checkboxStatus: checkedStatus,
+            checkboxStatus: finalCheckedStatus,
+            searchSuccessInfo: searchSuccess,
             url: page.url(),
             timestamp: new Date().toISOString()
           };
