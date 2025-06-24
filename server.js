@@ -21,7 +21,7 @@ let page;
 async function ensureBrowser() {
   if (!browser) {
     browser = await chromium.launch({ 
-      headless: true,  // Show the browser window
+      headless: false,  // Show the browser window
       slowMo: 500,      // Slow down actions so you can see them
       devtools: false   // Don't open devtools by default
     });
@@ -501,14 +501,14 @@ const toolsList = {
       }
     },
     {
-      name: 'extract_mls_community_fast',
-      description: 'Ultra-fast MLS community detection for Toronto Real Estate Board addresses (under 10 seconds)',
+      name: 'screenshot_mls_debug',
+      description: 'Take screenshots during MLS community detection process to debug what the browser sees',
       inputSchema: {
         type: 'object',
         properties: {
           address: {
             type: 'string',
-            description: 'The address to look up (e.g., "40 sunnyside hill rd, markham on")'
+            description: 'The address to debug with screenshots'
           }
         },
         required: ['address']
@@ -591,6 +591,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: JSON.stringify(chartResult, null, 2)
+            }
+          ]
+        };
+
+      case 'screenshot_mls_debug':
+        const debugResult = await screenshotMLSDebug(currentPage, args.address);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(debugResult, null, 2)
+            }
+          ]
+        };
+
+      case 'screenshot_mls_debug':
+        const debugResult = await screenshotMLSDebug(currentPage, args.address);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(debugResult, null, 2)
             }
           ]
         };
