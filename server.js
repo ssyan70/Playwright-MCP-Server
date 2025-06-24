@@ -20,8 +20,15 @@ let page;
 // Helper function to ensure browser is running
 async function ensureBrowser() {
   if (!browser) {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ 
+      headless: false,  // Show the browser window
+      slowMo: 500,      // Slow down actions so you can see them
+      devtools: false   // Don't open devtools by default
+    });
     page = await browser.newPage();
+    
+    // Set a reasonable viewport size
+    await page.setViewportSize({ width: 1280, height: 720 });
   }
   return page;
 }
@@ -29,58 +36,61 @@ async function ensureBrowser() {
 // Ultra-fast MLS Community Detection Function - optimized for speed
 async function extractMLSCommunityFast(page, address) {
   try {
-    console.log(`Starting FAST MLS community detection for: ${address}`);
+    console.log(`Starting VISUAL MLS community detection for: ${address}`);
     
     // Set aggressive timeouts and faster loading
     await page.goto('https://www.torontomls.net/Communities/map.html', { 
       waitUntil: 'domcontentloaded',
-      timeout: 8000
+      timeout: 15000
     });
     
-    // Minimal wait - just enough for basic DOM
-    await page.waitForTimeout(1500);
+    // Wait to see the page load
+    console.log('Page loaded - waiting to see initial state...');
+    await page.waitForTimeout(3000);
     
-    // Fast checkbox checking - no verification, just click
-    console.log('Fast checkbox activation...');
+    // Fast checkbox checking - with visual feedback
+    console.log('Clicking checkboxes - watch the browser...');
     await Promise.allSettled([
-      page.click('#arealayer').catch(() => {}),
-      page.click('#munilayer').catch(() => {}),
-      page.click('#commlayer').catch(() => {})
+      page.click('#arealayer').catch(() => console.log('Area layer checkbox not found')),
+      page.click('#munilayer').catch(() => console.log('Municipality layer checkbox not found')),
+      page.click('#commlayer').catch(() => console.log('Community layer checkbox not found'))
     ]);
     
-    // Minimal wait
-    await page.waitForTimeout(500);
+    // Wait to see checkbox effects
+    await page.waitForTimeout(1000);
     
-    // Fast search - no fancy error handling
-    console.log('Fast search execution...');
+    // Fast search - with visual feedback
+    console.log('Performing search - watch the search box...');
     await page.fill('#geosearch', address);
     await page.press('#geosearch', 'Enter');
     
-    // Wait for search to complete
-    await page.waitForTimeout(2000);
+    // Wait to see search complete
+    console.log('Search completed - waiting for map to center...');
+    await page.waitForTimeout(3000);
     
-    // Fast zoom-out sequence - try clicking zoom out button instead of mouse wheel
-    console.log('Fast zoom sequence (8x) using zoom out button...');
+    // Fast zoom-out sequence - with visual feedback
+    console.log('Starting zoom sequence - watch the map zoom out...');
     for (let i = 0; i < 8; i++) {
       try {
         // Try to click the zoom out button
         await page.click('button[aria-label="Zoom out"], button[title="Zoom out"], .gm-control-active[aria-label="Zoom out"]');
-        console.log(`Zoom ${i + 1}/8 completed via button click`);
+        console.log(`Zoom ${i + 1}/8 completed via button click - watch zoom level`);
       } catch (e) {
         try {
           // Fallback to mouse wheel if button click fails
           await page.mouse.wheel(0, 300);
           console.log(`Zoom ${i + 1}/8 completed via mouse wheel (fallback)`);
         } catch (e2) {
-          console.log(`Zoom ${i + 1}/8 failed`);
+          console.log(`Zoom ${i + 1}/8 failed - ${e2.message}`);
         }
       }
-      await page.waitForTimeout(300); // Slightly longer wait between zooms
+      await page.waitForTimeout(500); // Longer wait so you can see each zoom
     }
     
-    // Short wait for community labels to appear
-    console.log('Waiting for community labels to render...');
-    await page.waitForTimeout(2000); // Increased from 1000ms
+    // Wait for community labels to appear
+    console.log('Zoom complete - waiting for community labels to render...');
+    console.log('LOOK AT THE BROWSER: Can you see "Cornell" or any community names on the map?');
+    await page.waitForTimeout(5000); // Long wait so you can examine the map
     
     // Quick check of what's visible before detailed analysis
     const quickCheck = await page.evaluate(() => {
@@ -99,6 +109,10 @@ async function extractMLSCommunityFast(page, address) {
     });
     
     console.log('Quick visibility check:', quickCheck);
+    console.log('EXAMINE THE BROWSER: What text can you see on the map?');
+    
+    // Wait for user to examine
+    await page.waitForTimeout(3000);
     
     // Enhanced community detection - look for canvas/SVG text and map overlays
     const communityResult = await page.evaluate(() => {
