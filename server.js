@@ -58,7 +58,95 @@ async function captureScreenshot(page, filename = null) {
   }
 }
 
-// HouseSigma Chart Data Extraction Function
+// Extract map data function
+async function extractMapData(page, address = '') {
+  try {
+    const mapData = await page.evaluate((searchAddress) => {
+      const results = {
+        address: searchAddress,
+        timestamp: new Date().toISOString(),
+        communities: [],
+        municipalities: [],
+        mapLabels: [],
+        coordinates: null
+      };
+
+      // Try to get all text elements that might contain community names
+      const allTextElements = Array.from(document.querySelectorAll('*')).filter(el => {
+        const text = el.textContent || '';
+        const style = window.getComputedStyle(el);
+        // Look for elements that might be map labels
+        return text.trim().length > 0 && 
+               text.trim().length < 50 && 
+               (style.position === 'absolute' || style.position === 'fixed') &&
+               !text.includes('©') && 
+               !text.includes('Google') &&
+               !text.includes('Terms') &&
+               !text.includes('Report') &&
+               !text.includes('Keyboard') &&
+               !text.includes('Map Data');
+      });
+
+      // Extract text that might be community names
+      allTextElements.forEach(el => {
+        const text = el.textContent.trim();
+        if (text && text.length > 2 && text.length < 30) {
+          results.mapLabels.push({
+            text: text,
+            className: el.className,
+            tagName: el.tagName,
+            position: {
+              left: el.offsetLeft,
+              top: el.offsetTop
+            }
+          });
+        }
+      });
+
+      // Look for Google Maps specific data
+      try {
+        // Try to access Google Maps data if available
+        if (window.google && window.google.maps) {
+          console.log('Google Maps API detected');
+        }
+
+        // Look for any data attributes or hidden inputs with location info
+        const inputs = document.querySelectorAll('input[type="hidden"], input[data-*]');
+        inputs.forEach(input => {
+          if (input.value && (input.value.includes('community') || input.value.includes('municipality'))) {
+            results.communities.push(input.value);
+          }
+        });
+
+        // Check for any div elements with aria-labels that might contain location info
+        const ariaElements = document.querySelectorAll('[aria-label*="community"], [aria-label*="Community"], [aria-label*="municipality"], [aria-label*="Municipality"]');
+        ariaElements.forEach(el => {
+          if (el.getAttribute('aria-label')) {
+            results.communities.push(el.getAttribute('aria-label'));
+          }
+        });
+
+      } catch (e) {
+        console.log('Error accessing Google Maps data:', e);
+      }
+
+      return results;
+    }, address);
+
+    return {
+      success: true,
+      data: mapData,
+      timestamp: new Date().toISOString()
+    };
+
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
 async function extractHouseSigmaChartData(page, url) {
   const chartApiData = [];
   
@@ -293,6 +381,21 @@ const toolsList = {
       }
     },
     {
+      name: 'extract_map_data',
+      description: 'Extract community and location data from the Google Maps interface',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          address: {
+            type: 'string',
+            description: 'The address that was searched for',
+            default: ''
+          }
+        },
+        required: []
+      }
+    },
+    {
       name: 'extract_housesigma_chart',
       description: 'Extract chart data from HouseSigma market trends page with automatic authentication handling',
       inputSchema: {
@@ -416,6 +519,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
 
+      case 'extract_map_data':
+        const mapDataResult = await extractMapData(currentPage, args.address);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(mapDataResult, null, 2)
+            }
+          ]
+      case 'extract_map_data':
+        const mapDataResult = await extractMapData(currentPage, args.address);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(mapDataResult, null, 2)
+            }
+          ]
+        };
+
       case 'extract_housesigma_chart':
         const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
         return {
@@ -516,6 +639,33 @@ async function handleToolsCall(request) {
           ]
         };
 
+      case 'get_screenshot_url':
+        const screenshotUrlResult = await captureScreenshot(currentPage, args.filename);
+        if (screenshotUrlResult.success) {
+          const dataUrl = `data:image/png;base64,${screenshotUrlResult.base64}`;
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ...screenshotUrlResult,
+                  dataUrl: dataUrl,
+                  viewInstructions: "Copy the dataUrl value and paste it into your browser address bar to view the image"
+                }, null, 2)
+              }
+            ]
+          };
+        } else {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(screenshotUrlResult, null, 2)
+              }
+            ]
+          ];
+        }
+
       case 'extract_housesigma_chart':
         const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
         return {
@@ -559,7 +709,7 @@ const httpServer = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'healthy',
       service: 'playwright-mcp-server',
-      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'capture_screenshot', 'get_screenshot_url', 'extract_housesigma_chart'],
+      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'capture_screenshot', 'get_screenshot_url', 'extract_map_data', 'extract_housesigma_chart'],
       timestamp: new Date().toISOString()
     }));
     return;
@@ -718,5 +868,5 @@ httpServer.listen(PORT, () => {
   console.log(`HTTP Streamable endpoint: https://playwright-mcp-server.onrender.com/mcp`);
   console.log(`Legacy SSE endpoint: https://playwright-mcp-server.onrender.com/mcp (GET)`);
   console.log(`Health check endpoint: https://playwright-mcp-server.onrender.com/health`);
-  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, capture_screenshot, get_screenshot_url, extract_housesigma_chart');
+  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, capture_screenshot, get_screenshot_url, extract_map_data, extract_housesigma_chart');
 });
