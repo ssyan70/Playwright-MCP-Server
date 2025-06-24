@@ -21,13 +21,10 @@ let page;
 async function ensureBrowser() {
   if (!browser) {
     browser = await chromium.launch({ 
-      headless: true,  // Show the browser window
-      slowMo: 500,      // Slow down actions so you can see them
-      devtools: false   // Don't open devtools by default
+      headless: true,  // Keep headless - no visible browser
+      slowMo: 0       // No slow motion for speed
     });
     page = await browser.newPage();
-    
-    // Set a reasonable viewport size
     await page.setViewportSize({ width: 1280, height: 720 });
   }
   return page;
