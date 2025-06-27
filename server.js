@@ -17,6 +17,7 @@ const server = new Server({
 let browser;
 let page;
 let lastActivity = Date.now();
+let isConnected = false;
 const BROWSER_TIMEOUT = 300000; // 5 minutes
 const MEMORY_CLEANUP_INTERVAL = 60000; // 1 minute
 
@@ -46,60 +47,87 @@ const BROWSER_ARGS = [
 async function ensureBrowser(enableJS = false, highQuality = false) {
   lastActivity = Date.now();
   
-  if (!browser) {
-    let launchArgs = [...BROWSER_ARGS];
-    
-    // For TREB community mapping, we need images and better quality
-    if (highQuality) {
-      launchArgs = launchArgs.filter(arg => 
-        !arg.includes('--disable-images') && 
-        !arg.includes('--disable-javascript')
-      );
+  // Check if browser is still connected
+  if (browser && isConnected) {
+    try {
+      // Test if browser is still responsive
+      await browser.version();
+      return page;
+    } catch (error) {
+      console.log('Browser connection lost, reinitializing...');
+      browser = null;
+      page = null;
+      isConnected = false;
     }
-    
-    // Remove --disable-javascript if JS is needed
-    if (enableJS) {
-      const jsIndex = launchArgs.indexOf('--disable-javascript');
-      if (jsIndex > -1) launchArgs.splice(jsIndex, 1);
-    }
-    
-    browser = await chromium.launch({ 
-      headless: true,
-      args: launchArgs
-    });
-    
-    const viewportConfig = highQuality ? 
-      { width: 1200, height: 800 } :  // Larger viewport for mapping
-      { width: 800, height: 600 };   // Smaller for other tasks
-    
-    page = await browser.newPage({
-      viewport: viewportConfig,
-      extraHTTPHeaders: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-      }
-    });
-    
-    // Conditional resource blocking - allow images for mapping workflows
-    await page.route('**/*', (route) => {
-      const resourceType = route.request().resourceType();
-      const url = route.request().url();
+  }
+  
+  if (!browser || !isConnected) {
+    try {
+      let launchArgs = [...BROWSER_ARGS];
       
+      // For TREB community mapping, we need images and better quality
       if (highQuality) {
-        // For TREB mapping, only block fonts and media, allow images and CSS
-        if (['font', 'media'].includes(resourceType)) {
-          route.abort();
-        } else {
-          route.continue();
-        }
-      } else {
-        // For other workflows, block more aggressively
-        if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-          route.abort();
-        } else {
-          route.continue();
-        }
+        launchArgs = launchArgs.filter(arg => 
+          !arg.includes('--disable-images') && 
+          !arg.includes('--disable-javascript')
+        );
       }
-    });
+      
+      // Remove --disable-javascript if JS is needed
+      if (enableJS) {
+        const jsIndex = launchArgs.indexOf('--disable-javascript');
+        if (jsIndex > -1) launchArgs.splice(jsIndex, 1);
+      }
+      
+      console.log('Launching new browser instance...');
+      browser = await chromium.launch({ 
+        headless: true,
+        args: launchArgs
+      });
+      
+      const viewportConfig = highQuality ? 
+        { width: 1200, height: 800 } :  // Larger viewport for mapping
+        { width: 800, height: 600 };   // Smaller for other tasks
+      
+      page = await browser.newPage({
+        viewport: viewportConfig,
+        extraHTTPHeaders: {
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
+      });
+      
+      // Conditional resource blocking - allow images for mapping workflows
+      await page.route('**/*', (route) => {
+        const resourceType = route.request().resourceType();
+        const url = route.request().url();
+        
+        if (highQuality) {
+          // For TREB mapping, only block fonts and media, allow images and CSS
+          if (['font', 'media'].includes(resourceType)) {
+            route.abort();
+          } else {
+            route.continue();
+          }
+        } else {
+          // For other workflows, block more aggressively
+          if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+            route.abort();
+          } else {
+            route.continue();
+          }
+        }
+      });
+      
+      isConnected = true;
+      console.log('Browser initialized successfully');
+      
+    } catch (error) {
+      console.error('Failed to initialize browser:', error);
+      browser = null;
+      page = null;
+      isConnected = false;
+      throw new Error(`Browser initialization failed: ${error.message}`);
+    }
   }
   
   return page;
@@ -107,19 +135,21 @@ async function ensureBrowser(enableJS = false, highQuality = false) {
 
 // Cleanup browser when idle
 async function cleanupBrowser() {
-  if (browser && (Date.now() - lastActivity) > BROWSER_TIMEOUT) {
+  if (browser && isConnected && (Date.now() - lastActivity) > BROWSER_TIMEOUT) {
     console.log('Cleaning up idle browser...');
     try {
       await browser.close();
     } catch (error) {
       console.error('Error closing browser:', error);
-    }
-    browser = null;
-    page = null;
-    
-    // Force garbage collection if available
-    if (global.gc) {
-      global.gc();
+    } finally {
+      browser = null;
+      page = null;
+      isConnected = false;
+      
+      // Force garbage collection if available
+      if (global.gc) {
+        global.gc();
+      }
     }
   }
 }
@@ -366,10 +396,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const isTREBMapping = args.url.includes('torontomls.net') || args.url.includes('Communities');
         if (isTREBMapping && !needsHighQuality) {
           // Restart browser in high quality mode for TREB mapping
-          if (browser) {
-            await browser.close();
-            browser = null;
-            page = null;
+          if (browser && isConnected) {
+            try {
+              await browser.close();
+            } catch (error) {
+              console.error('Error closing browser for restart:', error);
+            } finally {
+              browser = null;
+              page = null;
+              isConnected = false;
+            }
           }
           const mappingPage = await ensureBrowser(true, true);
           await mappingPage.goto(args.url, { 
@@ -442,11 +478,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error) {
-    // Force cleanup on error
+    console.error('Tool execution error:', error);
+    // Force cleanup on error and reset connection state
     if (browser) {
-      try { await browser.close(); } catch {}
-      browser = null;
-      page = null;
+      try { 
+        await browser.close(); 
+      } catch (closeError) {
+        console.error('Error during emergency browser close:', closeError);
+      } finally {
+        browser = null;
+        page = null;
+        isConnected = false;
+      }
     }
     throw new Error(`Tool execution failed: ${error.message}`);
   }
@@ -598,15 +641,23 @@ const httpServer = http.createServer((req, res) => {
 // Cleanup handlers
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
-  if (browser) {
-    await browser.close();
+  if (browser && isConnected) {
+    try {
+      await browser.close();
+    } catch (error) {
+      console.error('Error during shutdown:', error);
+    }
   }
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  if (browser) {
-    await browser.close();
+  if (browser && isConnected) {
+    try {
+      await browser.close();
+    } catch (error) {
+      console.error('Error during SIGTERM:', error);
+    }
   }
   process.exit(0);
 });
@@ -614,7 +665,7 @@ process.on('SIGTERM', async () => {
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
-  if (browser) {
+  if (browser && isConnected) {
     browser.close().catch(() => {});
   }
   process.exit(1);
