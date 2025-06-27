@@ -13,169 +13,73 @@ const server = new Server({
   }
 });
 
-// Browser management with auto-cleanup
+// Global browser and page variables - simplified management
 let browser;
 let page;
-let lastActivity = Date.now();
-let isConnected = false;
-const BROWSER_TIMEOUT = 300000; // 5 minutes
-const MEMORY_CLEANUP_INTERVAL = 60000; // 1 minute
 
-// Optimized browser launch options (conditional for different workflows)
-const BROWSER_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-accelerated-2d-canvas',
-  '--disable-gpu',
-  '--disable-web-security',
-  '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-  '--disable-ipc-flooding-protection',
-  '--disable-background-timer-throttling',
-  '--disable-backgrounding-occluded-windows',
-  '--disable-renderer-backgrounding',
-  '--disable-extensions',
-  '--disable-plugins',
-  '--disable-images', // Will be removed for mapping workflows
-  '--disable-javascript', // Will be removed when needed
-  '--memory-pressure-off',
-  '--max_old_space_size=384', // Increased from 256 for mapping
-  '--optimize-for-size'
-];
-
-// Helper function to ensure browser is running with workflow-specific optimization
-async function ensureBrowser(enableJS = false, highQuality = false) {
-  lastActivity = Date.now();
-  
-  // Check if browser is still connected
-  if (browser && isConnected) {
-    try {
-      // Test if browser is still responsive
-      await browser.version();
-      return page;
-    } catch (error) {
-      console.log('Browser connection lost, reinitializing...');
-      browser = null;
-      page = null;
-      isConnected = false;
+// Helper function to ensure browser is running - fixed version
+async function ensureBrowser() {
+  try {
+    // Check if browser exists and is connected
+    if (browser) {
+      try {
+        await browser.version(); // Test connection
+        if (page && !page.isClosed()) {
+          return page; // Browser and page are good
+        }
+      } catch (error) {
+        console.log('Browser connection lost, will reinitialize');
+        browser = null;
+        page = null;
+      }
     }
-  }
-  
-  if (!browser || !isConnected) {
-    try {
-      let launchArgs = [...BROWSER_ARGS];
-      
-      // For TREB community mapping, we need images and better quality
-      if (highQuality) {
-        launchArgs = launchArgs.filter(arg => 
-          !arg.includes('--disable-images') && 
-          !arg.includes('--disable-javascript')
-        );
-      }
-      
-      // Remove --disable-javascript if JS is needed
-      if (enableJS) {
-        const jsIndex = launchArgs.indexOf('--disable-javascript');
-        if (jsIndex > -1) launchArgs.splice(jsIndex, 1);
-      }
-      
-      console.log('Launching new browser instance...');
+    
+    // Initialize browser if needed
+    if (!browser) {
+      console.log('Launching browser...');
       browser = await chromium.launch({ 
         headless: true,
-        args: launchArgs
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu'
+        ]
       });
-      
-      const viewportConfig = highQuality ? 
-        { width: 1200, height: 800 } :  // Larger viewport for mapping
-        { width: 800, height: 600 };   // Smaller for other tasks
-      
+    }
+    
+    // Create page if needed
+    if (!page || page.isClosed()) {
+      console.log('Creating new page...');
       page = await browser.newPage({
-        viewport: viewportConfig,
-        extraHTTPHeaders: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        }
+        viewport: { width: 1200, height: 800 }
       });
-      
-      // Conditional resource blocking - allow images for mapping workflows
-      await page.route('**/*', (route) => {
-        const resourceType = route.request().resourceType();
-        const url = route.request().url();
-        
-        if (highQuality) {
-          // For TREB mapping, only block fonts and media, allow images and CSS
-          if (['font', 'media'].includes(resourceType)) {
-            route.abort();
-          } else {
-            route.continue();
-          }
-        } else {
-          // For other workflows, block more aggressively
-          if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-            route.abort();
-          } else {
-            route.continue();
-          }
-        }
-      });
-      
-      isConnected = true;
-      console.log('Browser initialized successfully');
-      
-    } catch (error) {
-      console.error('Failed to initialize browser:', error);
-      browser = null;
-      page = null;
-      isConnected = false;
-      throw new Error(`Browser initialization failed: ${error.message}`);
     }
-  }
-  
-  return page;
-}
-
-// Cleanup browser when idle
-async function cleanupBrowser() {
-  if (browser && isConnected && (Date.now() - lastActivity) > BROWSER_TIMEOUT) {
-    console.log('Cleaning up idle browser...');
-    try {
-      await browser.close();
-    } catch (error) {
-      console.error('Error closing browser:', error);
-    } finally {
-      browser = null;
-      page = null;
-      isConnected = false;
-      
-      // Force garbage collection if available
-      if (global.gc) {
-        global.gc();
-      }
-    }
+    
+    return page;
+    
+  } catch (error) {
+    console.error('Browser initialization failed:', error);
+    // Clean reset on any error
+    browser = null;
+    page = null;
+    throw new Error(`Browser initialization failed: ${error.message}`);
   }
 }
 
-// Periodic cleanup
-setInterval(cleanupBrowser, MEMORY_CLEANUP_INTERVAL);
-
-// Optimized screenshot capture function with quality options
-async function captureScreenshot(page, filename = null, highQuality = false) {
+// Screenshot capture function
+async function captureScreenshot(page, filename = null) {
   try {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const screenshotName = filename || `screenshot-${timestamp}.png`;
     
-    // Dynamic quality based on use case
-    const screenshotOptions = highQuality ? {
-      fullPage: true,  // Full page for mapping
-      type: 'png',
-      // No quality reduction for mapping workflows
-    } : {
-      fullPage: false, // Only visible area for other uses
-      type: 'png',
-      quality: 70, // Reduced quality for non-critical screenshots
-      clip: { x: 0, y: 0, width: 800, height: 600 }
-    };
+    // Capture screenshot as base64
+    const screenshot = await page.screenshot({ 
+      fullPage: true,
+      type: 'png'
+    });
     
-    const screenshot = await page.screenshot(screenshotOptions);
+    // Convert to base64 string
     const base64Screenshot = screenshot.toString('base64');
     
     return {
@@ -184,8 +88,7 @@ async function captureScreenshot(page, filename = null, highQuality = false) {
       base64: base64Screenshot,
       url: page.url(),
       timestamp: new Date().toISOString(),
-      size: screenshot.length,
-      quality: highQuality ? 'high' : 'optimized'
+      size: screenshot.length
     };
   } catch (error) {
     return {
@@ -196,33 +99,31 @@ async function captureScreenshot(page, filename = null, highQuality = false) {
   }
 }
 
-// Optimized HouseSigma extraction with memory management
+// HouseSigma Chart Data Extraction Function
 async function extractHouseSigmaChartData(page, url) {
   const chartApiData = [];
   let responseHandler;
   
   try {
-    // Set up response monitoring
+    // Set up response monitoring for chart API data
     responseHandler = async (response) => {
       const responseUrl = response.url();
       
+      // Capture the specific chart API endpoint
       if (responseUrl.includes('/api/stats/trend/chart')) {
         try {
           const text = await response.text();
           const parsedData = JSON.parse(text);
           
-          // Keep only essential data to reduce memory
           chartApiData.push({
             url: responseUrl,
             status: response.status(),
+            contentType: response.headers()['content-type'] || '',
             timestamp: new Date().toISOString(),
-            data: {
-              chart: parsedData.data?.chart?.slice(0, 100) || [], // Limit data points
-              summary: parsedData.summary || {}
-            }
+            data: parsedData
           });
           
-          console.log('Chart API data captured');
+          console.log('Chart API data captured successfully');
         } catch (e) {
           console.warn('Failed to parse chart API response:', e.message);
         }
@@ -231,42 +132,78 @@ async function extractHouseSigmaChartData(page, url) {
     
     page.on('response', responseHandler);
     
-    // Navigate with shorter timeout
-    await page.goto(url, { 
-      waitUntil: 'domcontentloaded', // Faster than networkidle
-      timeout: 30000 
-    });
+    // Navigate to the market trends page
+    console.log('Navigating to market trends page');
+    await page.goto(url, { waitUntil: 'networkidle' });
     
-    // Reduced wait time
-    await page.waitForTimeout(5000);
+    // Wait for API calls to complete
+    await page.waitForTimeout(10000);
     
-    // Quick auth check
+    // Check if authentication is required
     const needsAuth = await page.evaluate(() => {
-      return document.querySelectorAll('.blur-light, .blur, .auth-btn').length > 0;
+      return document.querySelectorAll('.blur-light, .blur, .auth-btn, [class*="login"]').length > 0;
     });
     
     if (needsAuth) {
       console.log('Authentication required - attempting login');
       
-      await page.goto('https://housesigma.com/web/en/signin', { 
-        waitUntil: 'domcontentloaded',
-        timeout: 20000 
-      });
-      await page.waitForTimeout(2000);
-      
-      // Simplified login
-      await page.fill('input[type="email"], input[placeholder*="email" i]', 'sandeep@syans.com');
-      await page.fill('input[type="password"]', '1856HS!');
-      await page.click('button[type="submit"], button:has-text("Sign in")');
-      
+      // Navigate to login page
+      await page.goto('https://housesigma.com/web/en/signin', { waitUntil: 'networkidle' });
       await page.waitForTimeout(3000);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(5000);
+      
+      // Fill login form
+      const loginSuccess = await page.evaluate(() => {
+        const inputs = document.querySelectorAll('input');
+        let emailInput = null;
+        let passwordInput = null;
+        
+        for (let input of inputs) {
+          const type = input.type.toLowerCase();
+          const placeholder = (input.placeholder || '').toLowerCase();
+          
+          if (type === 'email' || placeholder.includes('email') || placeholder.includes('username')) {
+            emailInput = input;
+          } else if (type === 'password') {
+            passwordInput = input;
+          }
+        }
+        
+        if (emailInput && passwordInput) {
+          emailInput.value = 'sandeep@syans.com';
+          emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+          
+          passwordInput.value = '1856HS!';
+          passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+          
+          // Submit form
+          const submitButton = document.querySelector('button[type="submit"], input[type="submit"]') || 
+                             Array.from(document.querySelectorAll('button')).find(btn => 
+                                 btn.textContent.toLowerCase().includes('sign in') || 
+                                 btn.textContent.toLowerCase().includes('login'));
+          
+          if (submitButton) {
+            submitButton.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (loginSuccess) {
+        await page.waitForTimeout(5000);
+        
+        // Navigate back to market trends page after login
+        await page.goto(url, { waitUntil: 'networkidle' });
+        await page.waitForTimeout(10000);
+      }
     }
     
     // Clean up event listener
-    page.removeListener('response', responseHandler);
+    if (responseHandler) {
+      page.removeListener('response', responseHandler);
+    }
     
+    // Return the chart data
     if (chartApiData.length > 0) {
       const latestChartData = chartApiData[chartApiData.length - 1];
       
@@ -274,9 +211,10 @@ async function extractHouseSigmaChartData(page, url) {
         success: true,
         url: page.url(),
         chartData: latestChartData.data,
+        apiUrl: latestChartData.url,
         timestamp: latestChartData.timestamp,
         summary: {
-          dataPointsCount: latestChartData.data?.chart?.length || 0,
+          dataPointsCount: latestChartData.data?.data?.chart?.length || 0,
           status: latestChartData.status
         }
       };
@@ -305,7 +243,7 @@ async function extractHouseSigmaChartData(page, url) {
   }
 }
 
-// Simplified tools list (static)
+// Define tools list response (complete with all tools)
 const toolsList = {
   tools: [
     {
@@ -314,63 +252,115 @@ const toolsList = {
       inputSchema: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'The URL to navigate to' }
+          url: {
+            type: 'string',
+            description: 'The URL to navigate to'
+          }
         },
         required: ['url']
       }
     },
     {
       name: 'wait_for_content',
-      description: 'Wait for dynamic content to load',
+      description: 'Wait for dynamic content to load on the page',
       inputSchema: {
         type: 'object',
         properties: {
-          seconds: { type: 'number', description: 'Seconds to wait (default: 3)', default: 3 }
-        }
+          seconds: {
+            type: 'number',
+            description: 'Number of seconds to wait (default: 3)',
+            default: 3
+          }
+        },
+        required: []
       }
     },
     {
       name: 'fill_form',
-      description: 'Fill form field',
+      description: 'Fill out a form field on the current page',
       inputSchema: {
         type: 'object',
         properties: {
-          selector: { type: 'string', description: 'CSS selector' },
-          value: { type: 'string', description: 'Value to fill' }
+          selector: {
+            type: 'string',
+            description: 'CSS selector for the form field'
+          },
+          value: {
+            type: 'string',
+            description: 'Value to fill in the field'
+          }
         },
         required: ['selector', 'value']
       }
     },
     {
       name: 'click_element',
-      description: 'Click element',
+      description: 'Click on an element on the current page',
       inputSchema: {
         type: 'object',
         properties: {
-          selector: { type: 'string', description: 'CSS selector' },
-          timeout: { type: 'number', description: 'Timeout in ms', default: 30000 }
+          selector: {
+            type: 'string',
+            description: 'CSS selector for the element to click'
+          },
+          timeout: {
+            type: 'number',
+            description: 'Timeout in milliseconds (default: 60000)',
+            default: 60000
+          }
         },
         required: ['selector']
       }
     },
     {
+      name: 'get_page_content',
+      description: 'Get the text content of the current page',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    },
+    {
       name: 'capture_screenshot',
-      description: 'Capture screenshot with quality options for mapping workflows',
+      description: 'Capture a screenshot of the current page and return as base64',
       inputSchema: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: 'Optional filename' },
-          highQuality: { type: 'boolean', description: 'Use high quality for mapping (default: false)', default: false }
-        }
+          filename: {
+            type: 'string',
+            description: 'Optional filename for the screenshot (default: auto-generated)',
+            default: null
+          }
+        },
+        required: []
+      }
+    },
+    {
+      name: 'get_screenshot_url',
+      description: 'Capture screenshot and return a viewable data URL',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filename: {
+            type: 'string',
+            description: 'Optional filename for the screenshot (default: auto-generated)',
+            default: null
+          }
+        },
+        required: []
       }
     },
     {
       name: 'extract_housesigma_chart',
-      description: 'Extract HouseSigma chart data',
+      description: 'Extract chart data from HouseSigma market trends page with automatic authentication handling',
       inputSchema: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'HouseSigma URL' }
+          url: {
+            type: 'string',
+            description: 'The HouseSigma market trends URL to extract chart data from'
+          }
         },
         required: ['url']
       }
@@ -383,124 +373,237 @@ server.setRequestHandler(ListToolsRequestSchema, async () => toolsList);
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  console.log(`Executing tool: ${name}`);
   
   try {
-    // Determine if JavaScript and high quality are needed
-    const needsJS = ['extract_housesigma_chart', 'fill_form', 'click_element'].includes(name);
-    const needsHighQuality = name === 'capture_screenshot' && args.highQuality;
-    const currentPage = await ensureBrowser(needsJS, needsHighQuality);
+    const currentPage = await ensureBrowser();
     
     switch (name) {
       case 'navigate_to_url':
-        // Use high quality mode for TREB community URLs
-        const isTREBMapping = args.url.includes('torontomls.net') || args.url.includes('Communities');
-        if (isTREBMapping && !needsHighQuality) {
-          // Restart browser in high quality mode for TREB mapping
-          if (browser && isConnected) {
-            try {
-              await browser.close();
-            } catch (error) {
-              console.error('Error closing browser for restart:', error);
-            } finally {
-              browser = null;
-              page = null;
-              isConnected = false;
-            }
-          }
-          const mappingPage = await ensureBrowser(true, true);
-          await mappingPage.goto(args.url, { 
-            waitUntil: 'networkidle',  // Use networkidle for mapping sites
-            timeout: 45000 
-          });
-          await mappingPage.waitForTimeout(3000);
-        } else {
-          await currentPage.goto(args.url, { 
-            waitUntil: 'domcontentloaded',
-            timeout: 30000 
-          });
-          await currentPage.waitForTimeout(2000);
-        }
+        console.log(`Navigating to: ${args.url}`);
+        await currentPage.goto(args.url, { waitUntil: 'networkidle' });
+        // Wait for dynamic content to load
+        await currentPage.waitForTimeout(3000);
         return {
-          content: [{
-            type: 'text',
-            text: `Navigated to ${args.url}`
-          }]
+          content: [
+            {
+              type: 'text',
+              text: `Successfully navigated to ${args.url} and waited for content to load`
+            }
+          ]
         };
         
       case 'wait_for_content':
-        const waitSeconds = Math.min(args.seconds || 3, 10); // Cap at 10 seconds
+        const waitSeconds = args.seconds || 3;
         await currentPage.waitForTimeout(waitSeconds * 1000);
         return {
-          content: [{
-            type: 'text',
-            text: `Waited ${waitSeconds} seconds`
-          }]
+          content: [
+            {
+              type: 'text',
+              text: `Waited ${waitSeconds} seconds for content to load`
+            }
+          ]
         };
         
       case 'fill_form':
-        await currentPage.fill(args.selector, args.value, { timeout: 15000 });
+        await currentPage.fill(args.selector, args.value);
         return {
-          content: [{
-            type: 'text',
-            text: `Filled ${args.selector} with: ${args.value}`
-          }]
+          content: [
+            {
+              type: 'text',
+              text: `Successfully filled form field ${args.selector} with value: ${args.value}`
+            }
+          ]
         };
         
       case 'click_element':
-        const timeout = Math.min(args.timeout || 30000, 60000); // Cap timeout
+        const timeout = args.timeout || 60000;
         await currentPage.click(args.selector, { timeout });
         return {
-          content: [{
-            type: 'text',
-            text: `Clicked: ${args.selector}`
-          }]
+          content: [
+            {
+              type: 'text',
+              text: `Successfully clicked element: ${args.selector}`
+            }
+          ]
+        };
+        
+      case 'get_page_content':
+        const content = await currentPage.textContent('body');
+        return {
+          content: [
+            {
+              type: 'text',
+              text: content || 'No content found'
+            }
+          ]
         };
 
       case 'capture_screenshot':
-        const screenshotResult = await captureScreenshot(currentPage, args.filename, args.highQuality);
+        const screenshotResult = await captureScreenshot(currentPage, args.filename);
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify(screenshotResult)
-          }]
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(screenshotResult, null, 2)
+            }
+          ]
         };
+
+      case 'get_screenshot_url':
+        const screenshotUrlResult = await captureScreenshot(currentPage, args.filename);
+        if (screenshotUrlResult.success) {
+          const dataUrl = `data:image/png;base64,${screenshotUrlResult.base64}`;
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ...screenshotUrlResult,
+                  dataUrl: dataUrl,
+                  viewInstructions: "Copy the dataUrl value and paste it into your browser address bar to view the image"
+                }, null, 2)
+              }
+            ]
+          };
+        } else {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(screenshotUrlResult, null, 2)
+              }
+            ]
+          };
+        }
 
       case 'extract_housesigma_chart':
         const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify(chartResult)
-          }]
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(chartResult, null, 2)
+            }
+          ]
         };
         
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error) {
-    console.error('Tool execution error:', error);
-    // Force cleanup on error and reset connection state
-    if (browser) {
-      try { 
-        await browser.close(); 
-      } catch (closeError) {
-        console.error('Error during emergency browser close:', closeError);
-      } finally {
-        browser = null;
-        page = null;
-        isConnected = false;
-      }
-    }
+    console.error(`Tool execution failed for ${name}:`, error);
+    // Don't force close browser on every error, just log it
     throw new Error(`Tool execution failed: ${error.message}`);
   }
 });
 
-// Streamlined HTTP server with connection limits
-const connections = new Map();
-const MAX_CONNECTIONS = 10; // Limit concurrent connections
+// Helper functions to handle MCP requests directly
+async function handleToolsList() {
+  return toolsList;
+}
 
+async function handleToolsCall(request) {
+  const { name, arguments: args } = request.params;
+  
+  try {
+    const currentPage = await ensureBrowser();
+    
+    switch (name) {
+      case 'navigate_to_url':
+        await currentPage.goto(args.url, { waitUntil: 'networkidle' });
+        await currentPage.waitForTimeout(3000);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully navigated to ${args.url} and waited for content to load`
+            }
+          ]
+        };
+        
+      case 'wait_for_content':
+        const waitDuration = args.seconds || 3;
+        await currentPage.waitForTimeout(waitDuration * 1000);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Waited ${waitDuration} seconds for content to load`
+            }
+          ]
+        };
+        
+      case 'fill_form':
+        await currentPage.fill(args.selector, args.value);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully filled form field ${args.selector} with value: ${args.value}`
+            }
+          ]
+        };
+        
+      case 'click_element':
+        const timeout = args.timeout || 60000;
+        await currentPage.click(args.selector, { timeout });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully clicked element: ${args.selector}`
+            }
+          ]
+        };
+        
+      case 'get_page_content':
+        const content = await currentPage.textContent('body');
+        return {
+          content: [
+            {
+              type: 'text',
+              text: content || 'No content found'
+            }
+          ]
+        };
+
+      case 'capture_screenshot':
+        const screenshotResult = await captureScreenshot(currentPage, args.filename);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(screenshotResult, null, 2)
+            }
+          ]
+        };
+
+      case 'extract_housesigma_chart':
+        const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(chartResult, null, 2)
+            }
+          ]
+        };
+        
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  } catch (error) {
+    throw new Error(`Tool execution failed: ${error.message}`);
+  }
+}
+
+// SSE connection management
+const connections = new Map();
+
+// HTTP server for SSE
 const httpServer = http.createServer((req, res) => {
-  // CORS headers
+  // Handle CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -511,122 +614,145 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
-  // Health check
+  console.log(`${req.method} ${req.url}`);
+
+  // Health check endpoint
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'healthy',
       service: 'playwright-mcp-server',
-      memory: process.memoryUsage(),
-      connections: connections.size,
+      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'capture_screenshot', 'get_screenshot_url', 'extract_housesigma_chart'],
       timestamp: new Date().toISOString()
     }));
     return;
   }
 
-  // MCP endpoint
+  // MCP HTTP Streamable endpoint - supports both GET and POST
   if (req.url === '/mcp' || req.url === '/') {
     if (req.method === 'GET') {
-      // Limit SSE connections
-      if (connections.size >= MAX_CONNECTIONS) {
-        res.writeHead(503, { 'Content-Type': 'text/plain' });
-        res.end('Too many connections');
-        return;
-      }
-
+      // GET request for SSE fallback (legacy compatibility)
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*'
+        'Access-Control-Allow-Origin': '*',
+        'X-Accel-Buffering': 'no'
       });
 
       const connectionId = Math.random().toString(36).substring(7);
+      console.log(`New SSE connection: ${connectionId}`);
       connections.set(connectionId, res);
+
+      // Send endpoint event for legacy SSE clients
       res.write(`data: /mcp\n\n`);
 
       req.on('close', () => {
+        console.log(`SSE connection closed: ${connectionId}`);
         connections.delete(connectionId);
       });
+
       return;
     }
 
     if (req.method === 'POST') {
+      // HTTP Streamable transport - modern MCP
       let body = '';
-      const maxSize = 1024 * 1024; // 1MB limit
-      let size = 0;
-
       req.on('data', chunk => {
-        size += chunk.length;
-        if (size > maxSize) {
-          res.writeHead(413, { 'Content-Type': 'text/plain' });
-          res.end('Request too large');
-          return;
-        }
         body += chunk.toString();
       });
 
       req.on('end', async () => {
+        let request;
         try {
-          const request = JSON.parse(body);
-          let response;
+          console.log('Received MCP request:', body);
+          request = JSON.parse(body);
           
+          let response;
+          let sessionId;
+          
+          // Handle MCP JSON-RPC requests
           if (request.jsonrpc === '2.0') {
-            switch (request.method) {
-              case 'initialize':
-                response = {
-                  jsonrpc: '2.0',
-                  id: request.id,
-                  result: {
-                    protocolVersion: '2025-03-26',
-                    capabilities: { tools: {} },
-                    serverInfo: { name: 'playwright-mcp-server', version: '0.1.0' }
+            if (request.method === 'initialize') {
+              // Generate session ID for stateful sessions
+              sessionId = Math.random().toString(36).substring(2, 15);
+              
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                result: {
+                  protocolVersion: '2025-03-26',
+                  capabilities: {
+                    tools: {},
+                    prompts: {},
+                    resources: {}
+                  },
+                  serverInfo: {
+                    name: 'playwright-mcp-server',
+                    version: '0.1.0'
                   }
-                };
-                break;
-                
-              case 'notifications/initialized':
-                res.writeHead(200);
-                res.end();
-                return;
-                
-              case 'tools/list':
-                response = {
-                  jsonrpc: '2.0',
-                  id: request.id,
-                  result: toolsList
-                };
-                break;
-                
-              case 'tools/call':
-                const toolResponse = await server.request(request);
-                response = {
-                  jsonrpc: '2.0',
-                  id: request.id,
-                  result: toolResponse.result
-                };
-                break;
-                
-              default:
-                response = {
-                  jsonrpc: '2.0',
-                  id: request.id,
-                  error: { code: -32601, message: `Method not found: ${request.method}` }
-                };
+                }
+              };
+            } else if (request.method === 'notifications/initialized') {
+              // Handle initialization notification (no response needed)
+              console.log('Client initialized');
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(); 
+              return;
+            } else if (request.method === 'tools/list') {
+              const toolsResponse = await handleToolsList();
+              
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                result: toolsResponse
+              };
+            } else if (request.method === 'tools/call') {
+              const toolResponse = await handleToolsCall(request);
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                result: toolResponse
+              };
+            } else {
+              response = {
+                jsonrpc: '2.0',
+                id: request.id,
+                error: {
+                  code: -32601,
+                  message: `Method not found: ${request.method}`
+                }
+              };
             }
             
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            // Set headers for HTTP Streamable
+            const headers = {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            };
+            
+            // Add session ID if this is initialization
+            if (sessionId) {
+              headers['Mcp-Session-Id'] = sessionId;
+            }
+            
+            res.writeHead(200, headers);
             res.end(JSON.stringify(response));
+            console.log('Sent MCP response');
           } else {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
           }
         } catch (error) {
+          console.error('Error processing MCP request:', error);
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             jsonrpc: '2.0',
-            id: null,
-            error: { code: -32603, message: `Internal error: ${error.message}` }
+            id: request?.id || null,
+            error: {
+              code: -32603,
+              message: `Internal error: ${error.message}`
+            }
           }));
         }
       });
@@ -634,46 +760,33 @@ const httpServer = http.createServer((req, res) => {
     }
   }
 
-  res.writeHead(404);
+  // 404 for other routes
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not Found');
 });
 
-// Cleanup handlers
+// Cleanup on exit
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
-  if (browser && isConnected) {
-    try {
-      await browser.close();
-    } catch (error) {
-      console.error('Error during shutdown:', error);
-    }
+  if (browser) {
+    await browser.close();
   }
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  if (browser && isConnected) {
-    try {
-      await browser.close();
-    } catch (error) {
-      console.error('Error during SIGTERM:', error);
-    }
+  console.log('SIGTERM received, shutting down...');
+  if (browser) {
+    await browser.close();
   }
   process.exit(0);
-});
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught exception:', error);
-  if (browser && isConnected) {
-    browser.close().catch(() => {});
-  }
-  process.exit(1);
 });
 
 // Start server
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
-  console.log(`Memory-optimized Playwright MCP Server running on port ${PORT}`);
-  console.log(`Max memory: ${process.env.NODE_OPTIONS || 'default'}`);
+  console.log(`Playwright MCP Server running on port ${PORT}`);
+  console.log(`HTTP Streamable endpoint: /mcp`);
+  console.log(`Health check endpoint: /health`);
+  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, capture_screenshot, get_screenshot_url, extract_housesigma_chart');
 });
