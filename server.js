@@ -16,6 +16,10 @@ const server = new Server({
 // Global browser instance only - NO global page/context
 let browser;
 
+// Session management for workflows
+const sessions = new Map(); // sessionId -> { context, page, lastUsed }
+const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
 // Helper function to ensure browser is running
 async function ensureBrowser() {
   try {
@@ -53,15 +57,54 @@ async function ensureBrowser() {
   }
 }
 
-// Create fresh context and page for each operation
-async function createFreshContext() {
+// Clean up expired sessions
+function cleanupExpiredSessions() {
+  const now = Date.now();
+  for (const [sessionId, session] of sessions.entries()) {
+    if (now - session.lastUsed > SESSION_TIMEOUT) {
+      console.log(`Cleaning up expired session: ${sessionId}`);
+      session.context.close().catch(e => console.warn('Session cleanup error:', e.message));
+      sessions.delete(sessionId);
+    }
+  }
+}
+
+// Get or create session-based context
+async function getSessionContext(sessionId = 'default') {
+  // Cleanup expired sessions periodically
+  if (Math.random() < 0.1) { // 10% chance to cleanup on each call
+    cleanupExpiredSessions();
+  }
+  
+  // Check if session exists and is still valid
+  if (sessions.has(sessionId)) {
+    const session = sessions.get(sessionId);
+    try {
+      // Test if context is still valid
+      await session.page.evaluate(() => true);
+      session.lastUsed = Date.now();
+      console.log(`Reusing existing session: ${sessionId}`);
+      return { context: session.context, page: session.page };
+    } catch (error) {
+      console.log(`Session ${sessionId} is invalid, creating new one`);
+      sessions.delete(sessionId);
+    }
+  }
+  
+  // Create new session
   const browserInstance = await ensureBrowser();
   const context = await browserInstance.newContext({
     viewport: { width: 1200, height: 800 }
   });
   const page = await context.newPage();
   
-  console.log('Created fresh browser context and page');
+  sessions.set(sessionId, {
+    context,
+    page,
+    lastUsed: Date.now()
+  });
+  
+  console.log(`Created new session: ${sessionId}`);
   return { context, page };
 }
 
@@ -419,6 +462,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
       case 'click_element':
         const timeout = args.timeout || 60000;
+        // Wait for element to be visible and clickable before attempting click
+        await page.waitForSelector(args.selector, { timeout: timeout, state: 'visible' });
         await page.click(args.selector, { timeout });
         return {
           content: [
@@ -500,6 +545,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (context) {
       try {
         console.log('Closing browser context...');
+        // Add a small delay to ensure operations complete before cleanup
+        await new Promise(resolve => setTimeout(resolve, 100));
         await context.close();
       } catch (e) {
         console.warn('Context cleanup error:', e.message);
@@ -516,12 +563,9 @@ async function handleToolsList() {
 async function handleToolsCall(request) {
   const { name, arguments: args } = request.params;
   
-  let context = null;
-  let page = null;
-  
   try {
-    // Create fresh context and page for each tool call
-    ({ context, page } = await createFreshContext());
+    // Use session-based context instead of fresh context
+    const { context, page } = await getSessionContext();
     
     switch (name) {
       case 'navigate_to_url':
@@ -561,6 +605,8 @@ async function handleToolsCall(request) {
         
       case 'click_element':
         const timeout = args.timeout || 60000;
+        // Wait for element to be visible and clickable before attempting click
+        await page.waitForSelector(args.selector, { timeout: timeout, state: 'visible' });
         await page.click(args.selector, { timeout });
         return {
           content: [
@@ -609,17 +655,8 @@ async function handleToolsCall(request) {
     }
   } catch (error) {
     throw new Error(`Tool execution failed: ${error.message}`);
-  } finally {
-    // CRITICAL: Always cleanup context to prevent memory leaks
-    if (context) {
-      try {
-        console.log('Closing browser context...');
-        await context.close();
-      } catch (e) {
-        console.warn('Context cleanup error:', e.message);
-      }
-    }
   }
+  // No finally block - sessions are managed separately
 }
 
 // SSE connection management
@@ -792,6 +829,17 @@ const httpServer = http.createServer((req, res) => {
 // Cleanup on exit
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
+  
+  // Close all sessions
+  for (const [sessionId, session] of sessions.entries()) {
+    try {
+      await session.context.close();
+    } catch (e) {
+      console.warn(`Error closing session ${sessionId}:`, e.message);
+    }
+  }
+  sessions.clear();
+  
   if (browser) {
     await browser.close();
   }
@@ -800,6 +848,17 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down...');
+  
+  // Close all sessions
+  for (const [sessionId, session] of sessions.entries()) {
+    try {
+      await session.context.close();
+    } catch (e) {
+      console.warn(`Error closing session ${sessionId}:`, e.message);
+    }
+  }
+  sessions.clear();
+  
   if (browser) {
     await browser.close();
   }
