@@ -13,24 +13,20 @@ const server = new Server({
   }
 });
 
-// Global browser and page variables - simplified management
+// Global browser instance only - NO global page/context
 let browser;
-let page;
 
-// Helper function to ensure browser is running - fixed version
+// Helper function to ensure browser is running
 async function ensureBrowser() {
   try {
     // Check if browser exists and is connected
     if (browser) {
       try {
         await browser.version(); // Test connection
-        if (page && !page.isClosed()) {
-          return page; // Browser and page are good
-        }
+        return browser;
       } catch (error) {
         console.log('Browser connection lost, will reinitialize');
         browser = null;
-        page = null;
       }
     }
     
@@ -48,23 +44,25 @@ async function ensureBrowser() {
       });
     }
     
-    // Create page if needed
-    if (!page || page.isClosed()) {
-      console.log('Creating new page...');
-      page = await browser.newPage({
-        viewport: { width: 1200, height: 800 }
-      });
-    }
-    
-    return page;
+    return browser;
     
   } catch (error) {
     console.error('Browser initialization failed:', error);
-    // Clean reset on any error
     browser = null;
-    page = null;
     throw new Error(`Browser initialization failed: ${error.message}`);
   }
+}
+
+// Create fresh context and page for each operation
+async function createFreshContext() {
+  const browserInstance = await ensureBrowser();
+  const context = await browserInstance.newContext({
+    viewport: { width: 1200, height: 800 }
+  });
+  const page = await context.newPage();
+  
+  console.log('Created fresh browser context and page');
+  return { context, page };
 }
 
 // Screenshot capture function
@@ -198,11 +196,6 @@ async function extractHouseSigmaChartData(page, url) {
       }
     }
     
-    // Clean up event listener
-    if (responseHandler) {
-      page.removeListener('response', responseHandler);
-    }
-    
     // Return the chart data
     if (chartApiData.length > 0) {
       const latestChartData = chartApiData[chartApiData.length - 1];
@@ -228,11 +221,6 @@ async function extractHouseSigmaChartData(page, url) {
     }
     
   } catch (error) {
-    // Clean up event listener on error
-    if (responseHandler) {
-      page.removeListener('response', responseHandler);
-    }
-    
     console.error('Error:', error.message);
     return {
       success: false,
@@ -240,6 +228,15 @@ async function extractHouseSigmaChartData(page, url) {
       url: page.url(),
       timestamp: new Date().toISOString()
     };
+  } finally {
+    // Clean up event listener
+    if (responseHandler) {
+      try {
+        page.removeListener('response', responseHandler);
+      } catch (e) {
+        console.warn('Event listener cleanup error:', e.message);
+      }
+    }
   }
 }
 
@@ -375,15 +372,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   console.log(`Executing tool: ${name}`);
   
+  let context = null;
+  let page = null;
+  
   try {
-    const currentPage = await ensureBrowser();
+    // Create fresh context and page for each tool call
+    ({ context, page } = await createFreshContext());
     
     switch (name) {
       case 'navigate_to_url':
         console.log(`Navigating to: ${args.url}`);
-        await currentPage.goto(args.url, { waitUntil: 'networkidle' });
+        await page.goto(args.url, { waitUntil: 'networkidle' });
         // Wait for dynamic content to load
-        await currentPage.waitForTimeout(3000);
+        await page.waitForTimeout(3000);
         return {
           content: [
             {
@@ -395,7 +396,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
       case 'wait_for_content':
         const waitSeconds = args.seconds || 3;
-        await currentPage.waitForTimeout(waitSeconds * 1000);
+        await page.waitForTimeout(waitSeconds * 1000);
         return {
           content: [
             {
@@ -406,7 +407,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
         
       case 'fill_form':
-        await currentPage.fill(args.selector, args.value);
+        await page.fill(args.selector, args.value);
         return {
           content: [
             {
@@ -418,7 +419,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
       case 'click_element':
         const timeout = args.timeout || 60000;
-        await currentPage.click(args.selector, { timeout });
+        await page.click(args.selector, { timeout });
         return {
           content: [
             {
@@ -429,7 +430,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
         
       case 'get_page_content':
-        const content = await currentPage.textContent('body');
+        const content = await page.textContent('body');
         return {
           content: [
             {
@@ -440,7 +441,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
 
       case 'capture_screenshot':
-        const screenshotResult = await captureScreenshot(currentPage, args.filename);
+        const screenshotResult = await captureScreenshot(page, args.filename);
         return {
           content: [
             {
@@ -451,7 +452,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
 
       case 'get_screenshot_url':
-        const screenshotUrlResult = await captureScreenshot(currentPage, args.filename);
+        const screenshotUrlResult = await captureScreenshot(page, args.filename);
         if (screenshotUrlResult.success) {
           const dataUrl = `data:image/png;base64,${screenshotUrlResult.base64}`;
           return {
@@ -478,7 +479,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
       case 'extract_housesigma_chart':
-        const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
+        const chartResult = await extractHouseSigmaChartData(page, args.url);
         return {
           content: [
             {
@@ -493,8 +494,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   } catch (error) {
     console.error(`Tool execution failed for ${name}:`, error);
-    // Don't force close browser on every error, just log it
     throw new Error(`Tool execution failed: ${error.message}`);
+  } finally {
+    // CRITICAL: Always cleanup context to prevent memory leaks
+    if (context) {
+      try {
+        console.log('Closing browser context...');
+        await context.close();
+      } catch (e) {
+        console.warn('Context cleanup error:', e.message);
+      }
+    }
   }
 });
 
@@ -506,13 +516,17 @@ async function handleToolsList() {
 async function handleToolsCall(request) {
   const { name, arguments: args } = request.params;
   
+  let context = null;
+  let page = null;
+  
   try {
-    const currentPage = await ensureBrowser();
+    // Create fresh context and page for each tool call
+    ({ context, page } = await createFreshContext());
     
     switch (name) {
       case 'navigate_to_url':
-        await currentPage.goto(args.url, { waitUntil: 'networkidle' });
-        await currentPage.waitForTimeout(3000);
+        await page.goto(args.url, { waitUntil: 'networkidle' });
+        await page.waitForTimeout(3000);
         return {
           content: [
             {
@@ -524,7 +538,7 @@ async function handleToolsCall(request) {
         
       case 'wait_for_content':
         const waitDuration = args.seconds || 3;
-        await currentPage.waitForTimeout(waitDuration * 1000);
+        await page.waitForTimeout(waitDuration * 1000);
         return {
           content: [
             {
@@ -535,7 +549,7 @@ async function handleToolsCall(request) {
         };
         
       case 'fill_form':
-        await currentPage.fill(args.selector, args.value);
+        await page.fill(args.selector, args.value);
         return {
           content: [
             {
@@ -547,7 +561,7 @@ async function handleToolsCall(request) {
         
       case 'click_element':
         const timeout = args.timeout || 60000;
-        await currentPage.click(args.selector, { timeout });
+        await page.click(args.selector, { timeout });
         return {
           content: [
             {
@@ -558,7 +572,7 @@ async function handleToolsCall(request) {
         };
         
       case 'get_page_content':
-        const content = await currentPage.textContent('body');
+        const content = await page.textContent('body');
         return {
           content: [
             {
@@ -569,7 +583,7 @@ async function handleToolsCall(request) {
         };
 
       case 'capture_screenshot':
-        const screenshotResult = await captureScreenshot(currentPage, args.filename);
+        const screenshotResult = await captureScreenshot(page, args.filename);
         return {
           content: [
             {
@@ -580,7 +594,7 @@ async function handleToolsCall(request) {
         };
 
       case 'extract_housesigma_chart':
-        const chartResult = await extractHouseSigmaChartData(currentPage, args.url);
+        const chartResult = await extractHouseSigmaChartData(page, args.url);
         return {
           content: [
             {
@@ -595,6 +609,16 @@ async function handleToolsCall(request) {
     }
   } catch (error) {
     throw new Error(`Tool execution failed: ${error.message}`);
+  } finally {
+    // CRITICAL: Always cleanup context to prevent memory leaks
+    if (context) {
+      try {
+        console.log('Closing browser context...');
+        await context.close();
+      } catch (e) {
+        console.warn('Context cleanup error:', e.message);
+      }
+    }
   }
 }
 
