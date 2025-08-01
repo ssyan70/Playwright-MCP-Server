@@ -16,11 +16,11 @@ const server = new Server({
 // Global browser instance with resource limits
 let browser = null;
 
-// Session management - reduced timeout and max sessions
+// Single task execution - no concurrent sessions
 const sessions = new Map();
-const SESSION_TIMEOUT = 2 * 60 * 1000; // Reduced to 2 minutes
-const MAX_SESSIONS = 5; // Limit concurrent sessions
-const MAX_PAGES_PER_CONTEXT = 3; // Limit pages per context
+const SESSION_TIMEOUT = 1 * 60 * 1000; // 1 minute timeout
+const MAX_SESSIONS = 1; // Only 1 concurrent session
+const MAX_PAGES_PER_CONTEXT = 1; // Single page per context
 
 // Browser configuration with memory limits
 const BROWSER_CONFIG = {
@@ -34,7 +34,7 @@ const BROWSER_CONFIG = {
     '--disable-features=TranslateUI',
     '--disable-ipc-flooding-protection',
     '--memory-pressure-off',
-    '--max-old-space-size=512', // Limit V8 heap to 512MB
+    '--max-old-space-size=256', // Reduced to 256MB for single task
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
@@ -717,5 +717,5 @@ httpServer.listen(PORT, () => {
   console.log(`Optimized Playwright MCP Server running on port ${PORT}`);
   console.log(`Health check: /health`);
   console.log(`Manual cleanup: POST /cleanup`);
-  console.log('Memory-optimized for 15 concurrent tasks');
+  console.log('Memory-optimized for 1 task at a time - SEQUENTIAL EXECUTION ONLY');
 });
