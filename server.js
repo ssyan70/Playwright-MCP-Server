@@ -502,20 +502,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   console.log(`Executing tool: ${name}`);
   
-  // Extract session ID from arguments (auto-generate if not provided)
+  // Extract session ID from arguments (with better fallback logic)
   let sessionId = args.sessionId;
   if (!sessionId) {
-    // Auto-generate session ID based on URL domain for isolation
+    // Auto-generate session ID based on URL domain for navigation tools
     if (args.url) {
       try {
         const domain = new URL(args.url).hostname.replace(/[^a-zA-Z0-9]/g, '_');
         sessionId = `auto_${domain}`;
-        console.log(`Auto-generated session ID: ${sessionId}`);
+        console.log(`Auto-generated session ID from URL: ${sessionId}`);
       } catch (e) {
         sessionId = 'default';
       }
     } else {
-      sessionId = 'default';
+      // For non-navigation tools, try to reuse the most recent session
+      // This ensures click_element uses the same session as navigate_to_url
+      if (sessions.size === 1) {
+        // If there's exactly one session, use it
+        sessionId = Array.from(sessions.keys())[0];
+        console.log(`Using existing single session: ${sessionId}`);
+      } else if (sessions.size > 1) {
+        // If multiple sessions, use the most recently used one
+        let mostRecentSession = null;
+        let mostRecentTime = 0;
+        for (const [id, session] of sessions.entries()) {
+          if (session.lastUsed > mostRecentTime) {
+            mostRecentTime = session.lastUsed;
+            mostRecentSession = id;
+          }
+        }
+        sessionId = mostRecentSession || 'default';
+        console.log(`Using most recent session: ${sessionId}`);
+      } else {
+        sessionId = 'default';
+        console.log(`No existing sessions, using default`);
+      }
     }
   }
   
@@ -703,20 +724,38 @@ const httpServer = http.createServer((req, res) => {
               const { name, arguments: args } = request.params;
               console.log(`Executing tool via HTTP: ${name}`);
               
-              // Extract session ID (auto-generate if not provided)
+              // Extract session ID (with better fallback logic)
               let sessionId = args.sessionId;
               if (!sessionId) {
-                // Auto-generate session ID based on URL domain for isolation
+                // Auto-generate session ID based on URL domain for navigation tools
                 if (args.url) {
                   try {
                     const domain = new URL(args.url).hostname.replace(/[^a-zA-Z0-9]/g, '_');
                     sessionId = `auto_${domain}`;
-                    console.log(`Auto-generated session ID: ${sessionId}`);
+                    console.log(`Auto-generated session ID from URL: ${sessionId}`);
                   } catch (e) {
                     sessionId = 'default';
                   }
                 } else {
-                  sessionId = 'default';
+                  // For non-navigation tools, try to reuse the most recent session
+                  if (sessions.size === 1) {
+                    sessionId = Array.from(sessions.keys())[0];
+                    console.log(`Using existing single session: ${sessionId}`);
+                  } else if (sessions.size > 1) {
+                    let mostRecentSession = null;
+                    let mostRecentTime = 0;
+                    for (const [id, session] of sessions.entries()) {
+                      if (session.lastUsed > mostRecentTime) {
+                        mostRecentTime = session.lastUsed;
+                        mostRecentSession = id;
+                      }
+                    }
+                    sessionId = mostRecentSession || 'default';
+                    console.log(`Using most recent session: ${sessionId}`);
+                  } else {
+                    sessionId = 'default';
+                    console.log(`No existing sessions, using default`);
+                  }
                 }
               }
               
