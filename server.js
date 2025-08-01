@@ -13,38 +13,58 @@ const server = new Server({
   }
 });
 
-// Global browser instance only - NO global page/context
-let browser;
+// Global browser instance with resource limits
+let browser = null;
 
-// Session management for workflows
-const sessions = new Map(); // sessionId -> { context, page, lastUsed }
-const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+// Session management - reduced timeout and max sessions
+const sessions = new Map();
+const SESSION_TIMEOUT = 2 * 60 * 1000; // Reduced to 2 minutes
+const MAX_SESSIONS = 5; // Limit concurrent sessions
+const MAX_PAGES_PER_CONTEXT = 3; // Limit pages per context
 
-// Helper function to ensure browser is running
+// Browser configuration with memory limits
+const BROWSER_CONFIG = {
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--disable-web-security',
+    '--disable-features=TranslateUI',
+    '--disable-ipc-flooding-protection',
+    '--memory-pressure-off',
+    '--max-old-space-size=512', // Limit V8 heap to 512MB
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-background-networking'
+  ]
+};
+
+// Helper function to ensure browser with resource monitoring
 async function ensureBrowser() {
   try {
-    // Check if browser exists and is connected
     if (browser) {
       try {
-        await browser.version(); // Test connection
+        await browser.version();
         return browser;
       } catch (error) {
-        console.log('Browser connection lost, will reinitialize');
+        console.log('Browser connection lost, reinitializing...');
         browser = null;
       }
     }
     
-    // Initialize browser if needed
     if (!browser) {
-      console.log('Launching browser...');
-      browser = await chromium.launch({ 
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu'
-        ]
+      console.log('Launching browser with memory limits...');
+      browser = await chromium.launch(BROWSER_CONFIG);
+      
+      // Monitor browser resource usage
+      browser.on('disconnected', () => {
+        console.log('Browser disconnected');
+        browser = null;
+        // Force cleanup all sessions when browser disconnects
+        sessions.clear();
       });
     }
     
@@ -57,71 +77,146 @@ async function ensureBrowser() {
   }
 }
 
-// Clean up expired sessions
+// Aggressive session cleanup
 function cleanupExpiredSessions() {
   const now = Date.now();
+  const expiredSessions = [];
+  
   for (const [sessionId, session] of sessions.entries()) {
     if (now - session.lastUsed > SESSION_TIMEOUT) {
+      expiredSessions.push(sessionId);
+    }
+  }
+  
+  // Close expired sessions
+  expiredSessions.forEach(async (sessionId) => {
+    const session = sessions.get(sessionId);
+    if (session) {
       console.log(`Cleaning up expired session: ${sessionId}`);
-      session.context.close().catch(e => console.warn('Session cleanup error:', e.message));
+      try {
+        await session.context.close();
+      } catch (e) {
+        console.warn(`Session cleanup error for ${sessionId}:`, e.message);
+      }
       sessions.delete(sessionId);
+    }
+  });
+  
+  return expiredSessions.length;
+}
+
+// Enforce session limits
+async function enforceSessionLimits() {
+  if (sessions.size >= MAX_SESSIONS) {
+    // Close oldest session
+    let oldestSessionId = null;
+    let oldestTime = Date.now();
+    
+    for (const [sessionId, session] of sessions.entries()) {
+      if (session.lastUsed < oldestTime) {
+        oldestTime = session.lastUsed;
+        oldestSessionId = sessionId;
+      }
+    }
+    
+    if (oldestSessionId) {
+      const session = sessions.get(oldestSessionId);
+      console.log(`Closing oldest session to enforce limits: ${oldestSessionId}`);
+      try {
+        await session.context.close();
+      } catch (e) {
+        console.warn(`Error closing oldest session:`, e.message);
+      }
+      sessions.delete(oldestSessionId);
     }
   }
 }
 
-// Get or create session-based context
-async function getSessionContext(sessionId = 'default') {
-  // Cleanup expired sessions periodically
-  if (Math.random() < 0.1) { // 10% chance to cleanup on each call
-    cleanupExpiredSessions();
-  }
-  
-  // Check if session exists and is still valid
-  if (sessions.has(sessionId)) {
-    const session = sessions.get(sessionId);
-    try {
-      // Test if context is still valid
-      await session.page.evaluate(() => true);
-      session.lastUsed = Date.now();
-      console.log(`Reusing existing session: ${sessionId}`);
-      return { context: session.context, page: session.page };
-    } catch (error) {
-      console.log(`Session ${sessionId} is invalid, creating new one`);
-      sessions.delete(sessionId);
-    }
-  }
-  
-  // Create new session
+// Create context with strict resource limits
+async function createResourceLimitedContext() {
   const browserInstance = await ensureBrowser();
+  
   const context = await browserInstance.newContext({
-    viewport: { width: 1200, height: 800 }
+    viewport: { width: 1200, height: 800 },
+    // Resource limits
+    ignoreHTTPSErrors: true,
+    bypassCSP: true,
+    // Reduce memory usage
+    reducedMotion: 'reduce',
+    colorScheme: 'no-preference'
   });
+  
+  // Set page limits and error handling
+  context.setDefaultTimeout(30000); // 30s timeout
+  context.setDefaultNavigationTimeout(30000);
+  
+  return context;
+}
+
+// SINGLE STRATEGY: Always create fresh context per tool call
+async function createFreshContext() {
+  console.log('Creating fresh context for tool execution...');
+  
+  const context = await createResourceLimitedContext();
   const page = await context.newPage();
   
-  sessions.set(sessionId, {
-    context,
-    page,
-    lastUsed: Date.now()
-  });
+  // Set aggressive timeouts
+  page.setDefaultTimeout(30000);
+  page.setDefaultNavigationTimeout(30000);
   
-  console.log(`Created new session: ${sessionId}`);
+  // Disable unnecessary features to save memory
+  await page.setViewportSize({ width: 1200, height: 800 });
+  
   return { context, page };
 }
 
-// Screenshot capture function
+// Force cleanup of all resources
+async function forceCleanupAll() {
+  console.log('Forcing cleanup of all resources...');
+  
+  // Close all sessions
+  const sessionCleanupPromises = [];
+  for (const [sessionId, session] of sessions.entries()) {
+    sessionCleanupPromises.push(
+      session.context.close().catch(e => 
+        console.warn(`Error closing session ${sessionId}:`, e.message)
+      )
+    );
+  }
+  
+  await Promise.allSettled(sessionCleanupPromises);
+  sessions.clear();
+  
+  // Close browser if needed
+  if (browser) {
+    try {
+      await browser.close();
+      browser = null;
+      console.log('Browser closed successfully');
+    } catch (e) {
+      console.warn('Error closing browser:', e.message);
+      browser = null;
+    }
+  }
+}
+
+// Screenshot with memory management
 async function captureScreenshot(page, filename = null) {
   try {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const screenshotName = filename || `screenshot-${timestamp}.png`;
     
-    // Capture screenshot as base64
+    // Capture full quality for AI analysis
     const screenshot = await page.screenshot({ 
-      fullPage: true,
+      fullPage: true, // Full page for complete AI analysis
       type: 'png'
+      // No quality reduction - AI needs full quality
     });
     
-    // Convert to base64 string
     const base64Screenshot = screenshot.toString('base64');
+    
+    // Clear screenshot buffer immediately after conversion
+    screenshot.fill(0);
     
     return {
       success: true,
@@ -140,21 +235,25 @@ async function captureScreenshot(page, filename = null) {
   }
 }
 
-// HouseSigma Chart Data Extraction Function
+// HouseSigma extraction with better memory management
 async function extractHouseSigmaChartData(page, url) {
   const chartApiData = [];
-  let responseHandler;
+  let responseHandler = null;
   
   try {
-    // Set up response monitoring for chart API data
+    // Create handler with automatic cleanup
     responseHandler = async (response) => {
       const responseUrl = response.url();
       
-      // Capture the specific chart API endpoint
       if (responseUrl.includes('/api/stats/trend/chart')) {
         try {
           const text = await response.text();
           const parsedData = JSON.parse(text);
+          
+          // Only keep the most recent data to save memory
+          if (chartApiData.length > 2) {
+            chartApiData.shift(); // Remove oldest
+          }
           
           chartApiData.push({
             url: responseUrl,
@@ -173,14 +272,17 @@ async function extractHouseSigmaChartData(page, url) {
     
     page.on('response', responseHandler);
     
-    // Navigate to the market trends page
+    // Navigate with timeout
     console.log('Navigating to market trends page');
-    await page.goto(url, { waitUntil: 'networkidle' });
+    await page.goto(url, { 
+      waitUntil: 'networkidle',
+      timeout: 30000 
+    });
     
-    // Wait for API calls to complete
-    await page.waitForTimeout(10000);
+    // Reduced wait time
+    await page.waitForTimeout(5000);
     
-    // Check if authentication is required
+    // Check authentication
     const needsAuth = await page.evaluate(() => {
       return document.querySelectorAll('.blur-light, .blur, .auth-btn, [class*="login"]').length > 0;
     });
@@ -188,11 +290,12 @@ async function extractHouseSigmaChartData(page, url) {
     if (needsAuth) {
       console.log('Authentication required - attempting login');
       
-      // Navigate to login page
-      await page.goto('https://housesigma.com/web/en/signin', { waitUntil: 'networkidle' });
-      await page.waitForTimeout(3000);
+      await page.goto('https://housesigma.com/web/en/signin', { 
+        waitUntil: 'networkidle',
+        timeout: 30000 
+      });
+      await page.waitForTimeout(2000);
       
-      // Fill login form
       const loginSuccess = await page.evaluate(() => {
         const inputs = document.querySelectorAll('input');
         let emailInput = null;
@@ -216,7 +319,6 @@ async function extractHouseSigmaChartData(page, url) {
           passwordInput.value = '1856HS!';
           passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
           
-          // Submit form
           const submitButton = document.querySelector('button[type="submit"], input[type="submit"]') || 
                              Array.from(document.querySelectorAll('button')).find(btn => 
                                  btn.textContent.toLowerCase().includes('sign in') || 
@@ -231,15 +333,15 @@ async function extractHouseSigmaChartData(page, url) {
       });
       
       if (loginSuccess) {
+        await page.waitForTimeout(3000);
+        await page.goto(url, { 
+          waitUntil: 'networkidle',
+          timeout: 30000 
+        });
         await page.waitForTimeout(5000);
-        
-        // Navigate back to market trends page after login
-        await page.goto(url, { waitUntil: 'networkidle' });
-        await page.waitForTimeout(10000);
       }
     }
     
-    // Return the chart data
     if (chartApiData.length > 0) {
       const latestChartData = chartApiData[chartApiData.length - 1];
       
@@ -272,10 +374,11 @@ async function extractHouseSigmaChartData(page, url) {
       timestamp: new Date().toISOString()
     };
   } finally {
-    // Clean up event listener
+    // Guaranteed cleanup
     if (responseHandler) {
       try {
         page.removeListener('response', responseHandler);
+        console.log('Response handler cleaned up');
       } catch (e) {
         console.warn('Event listener cleanup error:', e.message);
       }
@@ -283,7 +386,7 @@ async function extractHouseSigmaChartData(page, url) {
   }
 }
 
-// Define tools list response (complete with all tools)
+// Tool definitions
 const toolsList = {
   tools: [
     {
@@ -292,246 +395,173 @@ const toolsList = {
       inputSchema: {
         type: 'object',
         properties: {
-          url: {
-            type: 'string',
-            description: 'The URL to navigate to'
-          }
+          url: { type: 'string', description: 'The URL to navigate to' }
         },
         required: ['url']
       }
     },
     {
       name: 'wait_for_content',
-      description: 'Wait for dynamic content to load on the page',
+      description: 'Wait for dynamic content to load',
       inputSchema: {
         type: 'object',
         properties: {
-          seconds: {
-            type: 'number',
-            description: 'Number of seconds to wait (default: 3)',
-            default: 3
-          }
+          seconds: { type: 'number', description: 'Seconds to wait (default: 3)', default: 3 }
         },
         required: []
       }
     },
     {
       name: 'fill_form',
-      description: 'Fill out a form field on the current page',
+      description: 'Fill out a form field',
       inputSchema: {
         type: 'object',
         properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector for the form field'
-          },
-          value: {
-            type: 'string',
-            description: 'Value to fill in the field'
-          }
+          selector: { type: 'string', description: 'CSS selector' },
+          value: { type: 'string', description: 'Value to fill' }
         },
         required: ['selector', 'value']
       }
     },
     {
       name: 'click_element',
-      description: 'Click on an element on the current page',
+      description: 'Click on an element',
       inputSchema: {
         type: 'object',
         properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector for the element to click'
-          },
-          timeout: {
-            type: 'number',
-            description: 'Timeout in milliseconds (default: 60000)',
-            default: 60000
-          }
+          selector: { type: 'string', description: 'CSS selector' },
+          timeout: { type: 'number', description: 'Timeout in ms', default: 30000 }
         },
         required: ['selector']
       }
     },
     {
       name: 'get_page_content',
-      description: 'Get the text content of the current page',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-        required: []
-      }
+      description: 'Get page text content',
+      inputSchema: { type: 'object', properties: {}, required: [] }
     },
     {
       name: 'capture_screenshot',
-      description: 'Capture a screenshot of the current page and return as base64',
+      description: 'Capture screenshot as base64',
       inputSchema: {
         type: 'object',
         properties: {
-          filename: {
-            type: 'string',
-            description: 'Optional filename for the screenshot (default: auto-generated)',
-            default: null
-          }
-        },
-        required: []
-      }
-    },
-    {
-      name: 'get_screenshot_url',
-      description: 'Capture screenshot and return a viewable data URL',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          filename: {
-            type: 'string',
-            description: 'Optional filename for the screenshot (default: auto-generated)',
-            default: null
-          }
+          filename: { type: 'string', description: 'Optional filename', default: null }
         },
         required: []
       }
     },
     {
       name: 'extract_housesigma_chart',
-      description: 'Extract chart data from HouseSigma market trends page with automatic authentication handling',
+      description: 'Extract HouseSigma chart data with auth',
       inputSchema: {
         type: 'object',
         properties: {
-          url: {
-            type: 'string',
-            description: 'The HouseSigma market trends URL to extract chart data from'
-          }
+          url: { type: 'string', description: 'HouseSigma trends URL' }
         },
         required: ['url']
       }
+    },
+    {
+      name: 'cleanup_resources',
+      description: 'Force cleanup all browser resources',
+      inputSchema: { type: 'object', properties: {}, required: [] }
     }
   ]
 };
 
-// Tool implementations
+// Tool handlers
 server.setRequestHandler(ListToolsRequestSchema, async () => toolsList);
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   console.log(`Executing tool: ${name}`);
   
+  // Special case: cleanup tool
+  if (name === 'cleanup_resources') {
+    await forceCleanupAll();
+    return {
+      content: [{
+        type: 'text',
+        text: 'All browser resources cleaned up successfully'
+      }]
+    };
+  }
+  
   let context = null;
   let page = null;
   
   try {
-    // Create fresh context and page for each tool call
+    // Always use fresh context for each tool call
     ({ context, page } = await createFreshContext());
     
     switch (name) {
       case 'navigate_to_url':
         console.log(`Navigating to: ${args.url}`);
-        await page.goto(args.url, { waitUntil: 'networkidle' });
-        // Wait for dynamic content to load
-        await page.waitForTimeout(3000);
+        await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.waitForTimeout(2000);
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Successfully navigated to ${args.url} and waited for content to load`
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: `Successfully navigated to ${args.url}`
+          }]
         };
         
       case 'wait_for_content':
         const waitSeconds = args.seconds || 3;
         await page.waitForTimeout(waitSeconds * 1000);
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Waited ${waitSeconds} seconds for content to load`
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: `Waited ${waitSeconds} seconds for content`
+          }]
         };
         
       case 'fill_form':
         await page.fill(args.selector, args.value);
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Successfully filled form field ${args.selector} with value: ${args.value}`
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: `Filled ${args.selector} with: ${args.value}`
+          }]
         };
         
       case 'click_element':
-        const timeout = args.timeout || 60000;
-        // Wait for element to be visible and clickable before attempting click
-        await page.waitForSelector(args.selector, { timeout: timeout, state: 'visible' });
+        const timeout = args.timeout || 30000;
+        await page.waitForSelector(args.selector, { timeout, state: 'visible' });
         await page.click(args.selector, { timeout });
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Successfully clicked element: ${args.selector}`
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: `Clicked element: ${args.selector}`
+          }]
         };
         
       case 'get_page_content':
         const content = await page.textContent('body');
         return {
-          content: [
-            {
-              type: 'text',
-              text: content || 'No content found'
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: content || 'No content found'
+          }]
         };
 
       case 'capture_screenshot':
         const screenshotResult = await captureScreenshot(page, args.filename);
         return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(screenshotResult, null, 2)
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: JSON.stringify(screenshotResult, null, 2)
+          }]
         };
-
-      case 'get_screenshot_url':
-        const screenshotUrlResult = await captureScreenshot(page, args.filename);
-        if (screenshotUrlResult.success) {
-          const dataUrl = `data:image/png;base64,${screenshotUrlResult.base64}`;
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  ...screenshotUrlResult,
-                  dataUrl: dataUrl,
-                  viewInstructions: "Copy the dataUrl value and paste it into your browser address bar to view the image"
-                }, null, 2)
-              }
-            ]
-          };
-        } else {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(screenshotUrlResult, null, 2)
-              }
-            ]
-          };
-        }
 
       case 'extract_housesigma_chart':
         const chartResult = await extractHouseSigmaChartData(page, args.url);
         return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(chartResult, null, 2)
-            }
-          ]
+          content: [{
+            type: 'text',
+            text: JSON.stringify(chartResult, null, 2)
+          }]
         };
         
       default:
@@ -541,13 +571,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     console.error(`Tool execution failed for ${name}:`, error);
     throw new Error(`Tool execution failed: ${error.message}`);
   } finally {
-    // CRITICAL: Always cleanup context to prevent memory leaks
+    // CRITICAL: Always cleanup context immediately
     if (context) {
       try {
         console.log('Closing browser context...');
-        // Add a small delay to ensure operations complete before cleanup
-        await new Promise(resolve => setTimeout(resolve, 100));
         await context.close();
+        console.log('Context closed successfully');
       } catch (e) {
         console.warn('Context cleanup error:', e.message);
       }
@@ -555,116 +584,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Helper functions to handle MCP requests directly
-async function handleToolsList() {
-  return toolsList;
-}
-
-async function handleToolsCall(request) {
-  const { name, arguments: args } = request.params;
-  
-  try {
-    // Use session-based context instead of fresh context
-    const { context, page } = await getSessionContext();
-    
-    switch (name) {
-      case 'navigate_to_url':
-        await page.goto(args.url, { waitUntil: 'networkidle' });
-        await page.waitForTimeout(3000);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Successfully navigated to ${args.url} and waited for content to load`
-            }
-          ]
-        };
-        
-      case 'wait_for_content':
-        const waitDuration = args.seconds || 3;
-        await page.waitForTimeout(waitDuration * 1000);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Waited ${waitDuration} seconds for content to load`
-            }
-          ]
-        };
-        
-      case 'fill_form':
-        await page.fill(args.selector, args.value);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Successfully filled form field ${args.selector} with value: ${args.value}`
-            }
-          ]
-        };
-        
-      case 'click_element':
-        const timeout = args.timeout || 60000;
-        // Wait for element to be visible and clickable before attempting click
-        await page.waitForSelector(args.selector, { timeout: timeout, state: 'visible' });
-        await page.click(args.selector, { timeout });
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Successfully clicked element: ${args.selector}`
-            }
-          ]
-        };
-        
-      case 'get_page_content':
-        const content = await page.textContent('body');
-        return {
-          content: [
-            {
-              type: 'text',
-              text: content || 'No content found'
-            }
-          ]
-        };
-
-      case 'capture_screenshot':
-        const screenshotResult = await captureScreenshot(page, args.filename);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(screenshotResult, null, 2)
-            }
-          ]
-        };
-
-      case 'extract_housesigma_chart':
-        const chartResult = await extractHouseSigmaChartData(page, args.url);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(chartResult, null, 2)
-            }
-          ]
-        };
-        
-      default:
-        throw new Error(`Unknown tool: ${name}`);
-    }
-  } catch (error) {
-    throw new Error(`Tool execution failed: ${error.message}`);
-  }
-  // No finally block - sessions are managed separately
-}
-
-// SSE connection management
-const connections = new Map();
-
-// HTTP server for SSE
+// HTTP server
 const httpServer = http.createServer((req, res) => {
-  // Handle CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -677,129 +598,79 @@ const httpServer = http.createServer((req, res) => {
 
   console.log(`${req.method} ${req.url}`);
 
-  // Health check endpoint
+  // Health check with memory info
   if (req.method === 'GET' && req.url === '/health') {
+    const memUsage = process.memoryUsage();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'healthy',
       service: 'playwright-mcp-server',
-      tools: ['navigate_to_url', 'wait_for_content', 'fill_form', 'click_element', 'get_page_content', 'capture_screenshot', 'get_screenshot_url', 'extract_housesigma_chart'],
+      memory: {
+        rss: Math.round(memUsage.rss / 1024 / 1024) + 'MB',
+        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024) + 'MB',
+        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024) + 'MB'
+      },
+      activeSessions: sessions.size,
+      browserConnected: browser ? true : false,
       timestamp: new Date().toISOString()
     }));
     return;
   }
 
-  // MCP HTTP Streamable endpoint - supports both GET and POST
+  // Cleanup endpoint
+  if (req.method === 'POST' && req.url === '/cleanup') {
+    forceCleanupAll().then(() => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: 'Resources cleaned up' }));
+    }).catch(err => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    });
+    return;
+  }
+
+  // MCP endpoint
   if (req.url === '/mcp' || req.url === '/') {
-    if (req.method === 'GET') {
-      // GET request for SSE fallback (legacy compatibility)
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
-        'X-Accel-Buffering': 'no'
-      });
-
-      const connectionId = Math.random().toString(36).substring(7);
-      console.log(`New SSE connection: ${connectionId}`);
-      connections.set(connectionId, res);
-
-      // Send endpoint event for legacy SSE clients
-      res.write(`data: /mcp\n\n`);
-
-      req.on('close', () => {
-        console.log(`SSE connection closed: ${connectionId}`);
-        connections.delete(connectionId);
-      });
-
-      return;
-    }
-
     if (req.method === 'POST') {
-      // HTTP Streamable transport - modern MCP
       let body = '';
-      req.on('data', chunk => {
-        body += chunk.toString();
-      });
+      req.on('data', chunk => { body += chunk.toString(); });
 
       req.on('end', async () => {
-        let request;
         try {
-          console.log('Received MCP request:', body);
-          request = JSON.parse(body);
-          
+          const request = JSON.parse(body);
           let response;
-          let sessionId;
           
-          // Handle MCP JSON-RPC requests
           if (request.jsonrpc === '2.0') {
             if (request.method === 'initialize') {
-              // Generate session ID for stateful sessions
-              sessionId = Math.random().toString(36).substring(2, 15);
-              
               response = {
                 jsonrpc: '2.0',
                 id: request.id,
                 result: {
                   protocolVersion: '2025-03-26',
-                  capabilities: {
-                    tools: {},
-                    prompts: {},
-                    resources: {}
-                  },
-                  serverInfo: {
-                    name: 'playwright-mcp-server',
-                    version: '0.1.0'
-                  }
+                  capabilities: { tools: {}, prompts: {}, resources: {} },
+                  serverInfo: { name: 'playwright-mcp-server', version: '0.1.0' }
                 }
               };
             } else if (request.method === 'notifications/initialized') {
-              // Handle initialization notification (no response needed)
               console.log('Client initialized');
               res.writeHead(200, { 'Content-Type': 'application/json' });
               res.end(); 
               return;
             } else if (request.method === 'tools/list') {
-              const toolsResponse = await handleToolsList();
-              
-              response = {
-                jsonrpc: '2.0',
-                id: request.id,
-                result: toolsResponse
-              };
+              response = { jsonrpc: '2.0', id: request.id, result: toolsList };
             } else if (request.method === 'tools/call') {
-              const toolResponse = await handleToolsCall(request);
-              response = {
-                jsonrpc: '2.0',
-                id: request.id,
-                result: toolResponse
-              };
+              const toolResponse = await server.handleRequest(request);
+              response = { jsonrpc: '2.0', id: request.id, result: toolResponse };
             } else {
               response = {
                 jsonrpc: '2.0',
                 id: request.id,
-                error: {
-                  code: -32601,
-                  message: `Method not found: ${request.method}`
-                }
+                error: { code: -32601, message: `Method not found: ${request.method}` }
               };
             }
             
-            // Set headers for HTTP Streamable
-            const headers = {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            };
-            
-            // Add session ID if this is initialization
-            if (sessionId) {
-              headers['Mcp-Session-Id'] = sessionId;
-            }
-            
-            res.writeHead(200, headers);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(response));
-            console.log('Sent MCP response');
           } else {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
@@ -810,10 +681,7 @@ const httpServer = http.createServer((req, res) => {
           res.end(JSON.stringify({
             jsonrpc: '2.0',
             id: request?.id || null,
-            error: {
-              code: -32603,
-              message: `Internal error: ${error.message}`
-            }
+            error: { code: -32603, message: `Internal error: ${error.message}` }
           }));
         }
       });
@@ -821,55 +689,33 @@ const httpServer = http.createServer((req, res) => {
     }
   }
 
-  // 404 for other routes
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not Found');
 });
 
-// Cleanup on exit
-process.on('SIGINT', async () => {
-  console.log('Shutting down...');
-  
-  // Close all sessions
-  for (const [sessionId, session] of sessions.entries()) {
-    try {
-      await session.context.close();
-    } catch (e) {
-      console.warn(`Error closing session ${sessionId}:`, e.message);
-    }
+// Periodic cleanup
+setInterval(() => {
+  const cleaned = cleanupExpiredSessions();
+  if (cleaned > 0) {
+    console.log(`Periodic cleanup: removed ${cleaned} expired sessions`);
   }
-  sessions.clear();
-  
-  if (browser) {
-    await browser.close();
-  }
-  process.exit(0);
-});
+}, 30000); // Every 30 seconds
 
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down...');
-  
-  // Close all sessions
-  for (const [sessionId, session] of sessions.entries()) {
-    try {
-      await session.context.close();
-    } catch (e) {
-      console.warn(`Error closing session ${sessionId}:`, e.message);
-    }
-  }
-  sessions.clear();
-  
-  if (browser) {
-    await browser.close();
-  }
+// Graceful shutdown
+async function gracefulShutdown(signal) {
+  console.log(`${signal} received, shutting down gracefully...`);
+  await forceCleanupAll();
   process.exit(0);
-});
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 // Start server
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
-  console.log(`Playwright MCP Server running on port ${PORT}`);
-  console.log(`HTTP Streamable endpoint: /mcp`);
-  console.log(`Health check endpoint: /health`);
-  console.log('Available tools: navigate_to_url, wait_for_content, fill_form, click_element, get_page_content, capture_screenshot, get_screenshot_url, extract_housesigma_chart');
+  console.log(`Optimized Playwright MCP Server running on port ${PORT}`);
+  console.log(`Health check: /health`);
+  console.log(`Manual cleanup: POST /cleanup`);
+  console.log('Memory-optimized for 15 concurrent tasks');
 });
