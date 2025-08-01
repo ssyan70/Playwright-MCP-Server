@@ -659,8 +659,106 @@ const httpServer = http.createServer((req, res) => {
             } else if (request.method === 'tools/list') {
               response = { jsonrpc: '2.0', id: request.id, result: toolsList };
             } else if (request.method === 'tools/call') {
-              const toolResponse = await server.handleRequest(request);
-              response = { jsonrpc: '2.0', id: request.id, result: toolResponse };
+              // Handle tool calls manually - server.handleRequest doesn't exist
+              const { name, arguments: args } = request.params;
+              console.log(`Executing tool via HTTP: ${name}`);
+              
+              let context = null;
+              let page = null;
+              
+              try {
+                // Handle cleanup_resources tool
+                if (name === 'cleanup_resources') {
+                  await forceCleanupAll();
+                  response = {
+                    jsonrpc: '2.0',
+                    id: request.id,
+                    result: {
+                      content: [{
+                        type: 'text',
+                        text: 'All browser resources cleaned up successfully'
+                      }]
+                    }
+                  };
+                } else {
+                  // Create fresh context for other tools
+                  ({ context, page } = await createFreshContext());
+                  
+                  let toolResult;
+                  
+                  switch (name) {
+                    case 'navigate_to_url':
+                      await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
+                      await page.waitForTimeout(2000);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: `Successfully navigated to ${args.url}`
+                        }]
+                      };
+                      break;
+                      
+                    case 'wait_for_content':
+                      const waitSeconds = args.seconds || 3;
+                      await page.waitForTimeout(waitSeconds * 1000);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: `Waited ${waitSeconds} seconds for content`
+                        }]
+                      };
+                      break;
+                      
+                    case 'capture_screenshot':
+                      const screenshotResult = await captureScreenshot(page, args.filename);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(screenshotResult, null, 2)
+                        }]
+                      };
+                      break;
+                      
+                    case 'extract_housesigma_chart':
+                      const chartResult = await extractHouseSigmaChartData(page, args.url);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(chartResult, null, 2)
+                        }]
+                      };
+                      break;
+                      
+                    default:
+                      throw new Error(`Unknown tool: ${name}`);
+                  }
+                  
+                  response = {
+                    jsonrpc: '2.0',
+                    id: request.id,
+                    result: toolResult
+                  };
+                }
+              } catch (toolError) {
+                console.error(`Tool execution failed for ${name}:`, toolError);
+                response = {
+                  jsonrpc: '2.0',
+                  id: request.id,
+                  error: {
+                    code: -32603,
+                    message: `Tool execution failed: ${toolError.message}`
+                  }
+                };
+              } finally {
+                // Cleanup context
+                if (context) {
+                  try {
+                    await context.close();
+                  } catch (e) {
+                    console.warn('Context cleanup error:', e.message);
+                  }
+                }
+              }
             } else {
               response = {
                 jsonrpc: '2.0',
