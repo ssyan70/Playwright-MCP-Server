@@ -685,12 +685,142 @@ const httpServer = http.createServer((req, res) => {
             } else if (request.method === 'tools/list') {
               response = { jsonrpc: '2.0', id: request.id, result: toolsList };
             } else if (request.method === 'tools/call') {
-              // Use the SAME session-based approach as CallToolRequestSchema
-              const toolResponse = await server.request({ 
-                method: 'tools/call', 
-                params: request.params 
-              }, CallToolRequestSchema);
-              response = { jsonrpc: '2.0', id: request.id, result: toolResponse };
+              // Call the tool handler directly - same as CallToolRequestSchema
+              const { name, arguments: args } = request.params;
+              console.log(`Executing tool via HTTP: ${name}`);
+              
+              // Extract session ID
+              const sessionId = args.sessionId || 'default';
+              
+              // Special case: cleanup tool
+              if (name === 'cleanup_resources') {
+                if (args.sessionId && sessions.has(args.sessionId)) {
+                  const session = sessions.get(args.sessionId);
+                  try {
+                    await session.context.close();
+                    sessions.delete(args.sessionId);
+                    console.log(`Cleaned up session: ${args.sessionId}`);
+                  } catch (e) {
+                    console.warn(`Error cleaning session ${args.sessionId}:`, e.message);
+                  }
+                } else {
+                  await forceCleanupAll();
+                }
+                response = {
+                  jsonrpc: '2.0',
+                  id: request.id,
+                  result: {
+                    content: [{
+                      type: 'text',
+                      text: 'Browser resources cleaned up successfully'
+                    }]
+                  }
+                };
+              } else {
+                // Use session-based context
+                const { context, page } = await getSessionContext(sessionId);
+                
+                let toolResult;
+                
+                try {
+                  switch (name) {
+                    case 'navigate_to_url':
+                      console.log(`Navigating to: ${args.url}`);
+                      await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
+                      await page.waitForTimeout(2000);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: `Successfully navigated to ${args.url}`
+                        }]
+                      };
+                      break;
+                      
+                    case 'wait_for_content':
+                      const waitSeconds = args.seconds || 3;
+                      await page.waitForTimeout(waitSeconds * 1000);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: `Waited ${waitSeconds} seconds for content`
+                        }]
+                      };
+                      break;
+                      
+                    case 'fill_form':
+                      await page.fill(args.selector, args.value);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: `Filled ${args.selector} with: ${args.value}`
+                        }]
+                      };
+                      break;
+                      
+                    case 'click_element':
+                      const timeout = args.timeout || 30000;
+                      await page.waitForSelector(args.selector, { timeout, state: 'visible' });
+                      await page.click(args.selector, { timeout });
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: `Clicked element: ${args.selector}`
+                        }]
+                      };
+                      break;
+                      
+                    case 'get_page_content':
+                      const content = await page.textContent('body');
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: content || 'No content found'
+                        }]
+                      };
+                      break;
+                      
+                    case 'capture_screenshot':
+                      const screenshotResult = await captureScreenshot(page, args.filename);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(screenshotResult, null, 2)
+                        }]
+                      };
+                      break;
+                      
+                    case 'extract_housesigma_chart':
+                      const chartResult = await extractHouseSigmaChartData(page, args.url);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(chartResult, null, 2)
+                        }]
+                      };
+                      break;
+                      
+                    default:
+                      throw new Error(`Unknown tool: ${name}`);
+                  }
+                  
+                  response = {
+                    jsonrpc: '2.0',
+                    id: request.id,
+                    result: toolResult
+                  };
+                  
+                } catch (toolError) {
+                  console.error(`Tool execution failed for ${name}:`, toolError);
+                  response = {
+                    jsonrpc: '2.0',
+                    id: request.id,
+                    error: {
+                      code: -32603,
+                      message: `Tool execution failed: ${toolError.message}`
+                    }
+                  };
+                }
+              }
             } else {
               response = {
                 jsonrpc: '2.0',
