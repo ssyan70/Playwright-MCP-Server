@@ -502,8 +502,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   console.log(`Executing tool: ${name}`);
   
-  // Extract session ID from arguments
-  const sessionId = args.sessionId || 'default';
+  // Extract session ID from arguments (auto-generate if not provided)
+  let sessionId = args.sessionId;
+  if (!sessionId) {
+    // Auto-generate session ID based on URL domain for isolation
+    if (args.url) {
+      try {
+        const domain = new URL(args.url).hostname.replace(/[^a-zA-Z0-9]/g, '_');
+        sessionId = `auto_${domain}`;
+        console.log(`Auto-generated session ID: ${sessionId}`);
+      } catch (e) {
+        sessionId = 'default';
+      }
+    } else {
+      sessionId = 'default';
+    }
+  }
   
   // Special case: cleanup tool
   if (name === 'cleanup_resources') {
@@ -689,8 +703,22 @@ const httpServer = http.createServer((req, res) => {
               const { name, arguments: args } = request.params;
               console.log(`Executing tool via HTTP: ${name}`);
               
-              // Extract session ID
-              const sessionId = args.sessionId || 'default';
+              // Extract session ID (auto-generate if not provided)
+              let sessionId = args.sessionId;
+              if (!sessionId) {
+                // Auto-generate session ID based on URL domain for isolation
+                if (args.url) {
+                  try {
+                    const domain = new URL(args.url).hostname.replace(/[^a-zA-Z0-9]/g, '_');
+                    sessionId = `auto_${domain}`;
+                    console.log(`Auto-generated session ID: ${sessionId}`);
+                  } catch (e) {
+                    sessionId = 'default';
+                  }
+                } else {
+                  sessionId = 'default';
+                }
+              }
               
               // Special case: cleanup tool
               if (name === 'cleanup_resources') {
