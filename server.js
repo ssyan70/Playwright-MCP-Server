@@ -16,28 +16,25 @@ const server = new Server({
 // Global browser instance with resource limits
 let browser = null;
 
-// Session management for stateful workflows
+// Session management with workflow-specific timeouts
 const sessions = new Map();
-const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes for workflow completion
-const MAX_SESSIONS = 3; // Allow a few concurrent workflows
+const SESSION_TIMEOUTS = {
+  'auto_www_onland_ca': 3 * 60 * 1000,      // 3 minutes - OnLand is fast
+  'auto_housesigma_com': 8 * 60 * 1000,     // 8 minutes - HouseSigma needs auth
+  'auto_www_torontomls_net': 10 * 60 * 1000, // 10 minutes - MLS is complex
+  'default': 5 * 60 * 1000                   // 5 minutes - general fallback
+};
+const MAX_SESSIONS = 3;
 
-// Browser configuration with memory limits
+// Browser configuration - restored to original working config
 const BROWSER_CONFIG = {
   headless: true,
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--disable-web-security',
-    '--disable-features=TranslateUI',
-    '--disable-ipc-flooding-protection',
-    '--memory-pressure-off',
-    '--max-old-space-size=256', // Reduced to 256MB for single task
-    '--disable-background-timer-throttling',
-    '--disable-renderer-backgrounding',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-background-networking'
+    '--disable-gpu'
+    // Removed additional args that might interfere with page rendering
   ]
 };
 
@@ -76,13 +73,14 @@ async function ensureBrowser() {
   }
 }
 
-// Aggressive session cleanup
+// Workflow-aware session cleanup
 function cleanupExpiredSessions() {
   const now = Date.now();
   const expiredSessions = [];
   
   for (const [sessionId, session] of sessions.entries()) {
-    if (now - session.lastUsed > SESSION_TIMEOUT) {
+    const timeout = SESSION_TIMEOUTS[sessionId] || SESSION_TIMEOUTS['default'];
+    if (now - session.lastUsed > timeout) {
       expiredSessions.push(sessionId);
     }
   }
@@ -91,7 +89,7 @@ function cleanupExpiredSessions() {
   expiredSessions.forEach(async (sessionId) => {
     const session = sessions.get(sessionId);
     if (session) {
-      console.log(`Cleaning up expired session: ${sessionId}`);
+      console.log(`Cleaning up expired session: ${sessionId} (timeout: ${SESSION_TIMEOUTS[sessionId] || SESSION_TIMEOUTS['default']}ms)`);
       try {
         await session.context.close();
       } catch (e) {
@@ -131,6 +129,45 @@ async function enforceSessionLimits() {
   }
 }
 
+// Site-specific browser context configurations
+function getContextConfig(sessionId) {
+  const baseConfig = {
+    viewport: { width: 1200, height: 800 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  };
+  
+  // Site-specific optimizations
+  if (sessionId.includes('housesigma')) {
+    return {
+      ...baseConfig,
+      // HouseSigma optimizations - handle auth cookies
+      viewport: { width: 1400, height: 900 }, // Larger for charts
+      extraHTTPHeaders: {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
+      }
+    };
+  } else if (sessionId.includes('torontomls')) {
+    return {
+      ...baseConfig,
+      // MLS optimizations - handle complex map interactions
+      viewport: { width: 1600, height: 1000 }, // Larger for maps
+      hasTouch: true, // Enable touch events for map interactions
+      isMobile: false
+    };
+  } else if (sessionId.includes('onland')) {
+    return {
+      ...baseConfig,
+      // OnLand optimizations - fast property searches
+      viewport: { width: 1200, height: 800 }, // Standard size
+      extraHTTPHeaders: {
+        'Accept': 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    };
+  }
+  
+  return baseConfig;
+}
 // Get or create session-based context (for multi-step workflows)
 async function getSessionContext(sessionId = 'default') {
   console.log(`Getting session context: ${sessionId}`);
@@ -156,14 +193,14 @@ async function getSessionContext(sessionId = 'default') {
   // Enforce session limits
   await enforceSessionLimits();
   
-  // Create new session
+  // Create new session - simplified like original
   const browserInstance = await ensureBrowser();
   const context = await browserInstance.newContext({
     viewport: { width: 1200, height: 800 }
   });
   const page = await context.newPage();
   
-  // Set timeouts
+  // Set timeouts - same as original
   page.setDefaultTimeout(30000);
   page.setDefaultNavigationTimeout(30000);
   
@@ -177,7 +214,47 @@ async function getSessionContext(sessionId = 'default') {
   return { context, page };
 }
 
-// Force cleanup of all resources
+// Enhanced navigation with retry logic
+async function robustNavigation(page, url, options = {}) {
+  const maxRetries = options.retries || 2;
+  const waitTime = options.waitTime || 3000;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Navigation attempt ${attempt}/${maxRetries} to: ${url}`);
+      
+      await page.goto(url, { 
+        waitUntil: 'networkidle', 
+        timeout: options.timeout || 30000 
+      });
+      
+      // Site-specific post-navigation waits
+      if (url.includes('housesigma.com')) {
+        await page.waitForTimeout(5000); // Wait for React to load
+      } else if (url.includes('torontomls.net')) {
+        await page.waitForTimeout(4000); // Wait for map initialization
+      } else if (url.includes('onland.ca')) {
+        await page.waitForTimeout(2000); // OnLand is faster
+      } else {
+        await page.waitForTimeout(waitTime);
+      }
+      
+      // Verify page loaded successfully
+      const title = await page.title();
+      if (title && !title.includes('Error') && !title.includes('404')) {
+        console.log(`Navigation successful: ${title}`);
+        return { success: true, title, attempt };
+      }
+      
+    } catch (error) {
+      console.warn(`Navigation attempt ${attempt} failed: ${error.message}`);
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      await page.waitForTimeout(2000); // Wait before retry
+    }
+  }
+}
 async function forceCleanupAll() {
   console.log('Forcing cleanup of all resources...');
   
@@ -482,16 +559,19 @@ const toolsList = {
       }
     },
     {
-      name: 'cleanup_resources',
-      description: 'Force cleanup browser resources',
-      inputSchema: { 
-        type: 'object', 
+      name: 'onland_property_search',
+      description: 'Complete OnLand property search workflow: navigate, search, extract results',
+      inputSchema: {
+        type: 'object',
         properties: {
-          sessionId: { type: 'string', description: 'Specific session ID to cleanup (optional)' }
-        }, 
-        required: [] 
+          searchQuery: { type: 'string', description: 'Property search query (address, city, etc.)' },
+          propertyType: { type: 'string', description: 'Property type filter', default: 'all' },
+          takeScreenshot: { type: 'boolean', description: 'Capture screenshot of results', default: true },
+          maxResults: { type: 'number', description: 'Maximum results to extract', default: 10 }
+        },
+        required: ['searchQuery']
       }
-    }
+    },
   ]
 };
 
@@ -570,11 +650,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'navigate_to_url':
         console.log(`Navigating to: ${args.url}`);
         await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
-        await page.waitForTimeout(2000);
+        // Wait for dynamic content - same as original
+        await page.waitForTimeout(3000);
         return {
           content: [{
             type: 'text',
-            text: `Successfully navigated to ${args.url}`
+            text: `Successfully navigated to ${args.url} and waited for content to load`
           }]
         };
         
@@ -598,13 +679,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
         
       case 'click_element':
-        const timeout = args.timeout || 30000;
-        await page.waitForSelector(args.selector, { timeout, state: 'visible' });
+        const timeout = args.timeout || 60000; // Restored original 60s timeout
+        // Wait for element to be visible and clickable before attempting click
+        await page.waitForSelector(args.selector, { timeout: timeout, state: 'visible' });
         await page.click(args.selector, { timeout });
         return {
           content: [{
             type: 'text',
-            text: `Clicked element: ${args.selector}`
+            text: `Successfully clicked element: ${args.selector}`
           }]
         };
         
