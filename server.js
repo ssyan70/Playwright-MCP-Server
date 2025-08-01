@@ -16,11 +16,10 @@ const server = new Server({
 // Global browser instance with resource limits
 let browser = null;
 
-// Single task execution - no concurrent sessions
+// Session management for stateful workflows
 const sessions = new Map();
-const SESSION_TIMEOUT = 1 * 60 * 1000; // 1 minute timeout
-const MAX_SESSIONS = 1; // Only 1 concurrent session
-const MAX_PAGES_PER_CONTEXT = 1; // Single page per context
+const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes for workflow completion
+const MAX_SESSIONS = 3; // Allow a few concurrent workflows
 
 // Browser configuration with memory limits
 const BROWSER_CONFIG = {
@@ -132,41 +131,47 @@ async function enforceSessionLimits() {
   }
 }
 
-// Create context with strict resource limits
-async function createResourceLimitedContext() {
+// Get or create session-based context (restored for multi-step workflows)
+async function getSessionContext(sessionId = 'default') {
+  // Cleanup expired sessions
+  cleanupExpiredSessions();
+  
+  // Check if session exists and is still valid
+  if (sessions.has(sessionId)) {
+    const session = sessions.get(sessionId);
+    try {
+      // Test if context is still valid
+      await session.page.evaluate(() => true);
+      session.lastUsed = Date.now();
+      console.log(`Reusing existing session: ${sessionId}`);
+      return { context: session.context, page: session.page };
+    } catch (error) {
+      console.log(`Session ${sessionId} is invalid, creating new one`);
+      sessions.delete(sessionId);
+    }
+  }
+  
+  // Enforce session limits
+  await enforceSessionLimits();
+  
+  // Create new session
   const browserInstance = await ensureBrowser();
-  
   const context = await browserInstance.newContext({
-    viewport: { width: 1200, height: 800 },
-    // Resource limits
-    ignoreHTTPSErrors: true,
-    bypassCSP: true,
-    // Reduce memory usage
-    reducedMotion: 'reduce',
-    colorScheme: 'no-preference'
+    viewport: { width: 1200, height: 800 }
   });
-  
-  // Set page limits and error handling
-  context.setDefaultTimeout(30000); // 30s timeout
-  context.setDefaultNavigationTimeout(30000);
-  
-  return context;
-}
-
-// SINGLE STRATEGY: Always create fresh context per tool call
-async function createFreshContext() {
-  console.log('Creating fresh context for tool execution...');
-  
-  const context = await createResourceLimitedContext();
   const page = await context.newPage();
   
-  // Set aggressive timeouts
+  // Set timeouts
   page.setDefaultTimeout(30000);
   page.setDefaultNavigationTimeout(30000);
   
-  // Disable unnecessary features to save memory
-  await page.setViewportSize({ width: 1200, height: 800 });
+  sessions.set(sessionId, {
+    context,
+    page,
+    lastUsed: Date.now()
+  });
   
+  console.log(`Created new session: ${sessionId}`);
   return { context, page };
 }
 
@@ -235,7 +240,129 @@ async function captureScreenshot(page, filename = null) {
   }
 }
 
-// HouseSigma extraction with better memory management
+// Complete MLS workflow function
+async function completeMlsWorkflow(page, url, municipalitySelector, takeScreenshot, waitSeconds) {
+  try {
+    console.log(`Starting MLS workflow for: ${url}`);
+    
+    // Step 1: Navigate to MLS page
+    console.log('Step 1: Navigating to MLS page...');
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.waitForTimeout(3000); // Wait for initial load
+    
+    // Step 2: Click municipality layer
+    console.log(`Step 2: Clicking municipality selector: ${municipalitySelector}`);
+    await page.waitForSelector(municipalitySelector, { timeout: 30000, state: 'visible' });
+    await page.click(municipalitySelector);
+    await page.waitForTimeout(waitSeconds * 1000); // Wait for layer to load
+    
+    // Step 3: Extract page data
+    console.log('Step 3: Extracting page content...');
+    const pageContent = await page.textContent('body');
+    
+    // Step 4: Capture screenshot if requested
+    let screenshotResult = null;
+    if (takeScreenshot) {
+      console.log('Step 4: Capturing screenshot...');
+      screenshotResult = await captureScreenshot(page);
+    }
+    
+    // Step 5: Return comprehensive results
+    const result = {
+      success: true,
+      workflow: 'complete_mls_workflow',
+      steps: [
+        { step: 1, action: 'navigate', url: page.url(), status: 'completed' },
+        { step: 2, action: 'click_municipality', selector: municipalitySelector, status: 'completed' },
+        { step: 3, action: 'extract_content', contentLength: pageContent?.length || 0, status: 'completed' },
+        { step: 4, action: 'screenshot', status: takeScreenshot ? 'completed' : 'skipped' }
+      ],
+      data: {
+        url: page.url(),
+        pageContent: pageContent || 'No content extracted',
+        contentLength: pageContent?.length || 0
+      },
+      screenshot: screenshotResult,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log('MLS workflow completed successfully');
+    return result;
+    
+  } catch (error) {
+    console.error('MLS workflow failed:', error.message);
+    return {
+      success: false,
+      workflow: 'complete_mls_workflow',
+      error: error.message,
+      url: page.url(),
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+// Generic navigate-click-extract workflow
+async function navigateClickExtract(page, url, clickSelector, extractSelector, waitAfterClick, takeScreenshot) {
+  try {
+    console.log(`Starting navigate-click-extract workflow for: ${url}`);
+    
+    // Step 1: Navigate
+    console.log('Step 1: Navigating...');
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.waitForTimeout(2000);
+    
+    // Step 2: Click element
+    console.log(`Step 2: Clicking element: ${clickSelector}`);
+    await page.waitForSelector(clickSelector, { timeout: 30000, state: 'visible' });
+    await page.click(clickSelector);
+    await page.waitForTimeout(waitAfterClick * 1000);
+    
+    // Step 3: Extract content
+    let extractedContent = null;
+    if (extractSelector) {
+      console.log(`Step 3: Extracting content from: ${extractSelector}`);
+      extractedContent = await page.textContent(extractSelector);
+    } else {
+      console.log('Step 3: Extracting full page content...');
+      extractedContent = await page.textContent('body');
+    }
+    
+    // Step 4: Screenshot if requested
+    let screenshotResult = null;
+    if (takeScreenshot) {
+      console.log('Step 4: Capturing screenshot...');
+      screenshotResult = await captureScreenshot(page);
+    }
+    
+    return {
+      success: true,
+      workflow: 'navigate_click_extract',
+      steps: [
+        { step: 1, action: 'navigate', url: page.url(), status: 'completed' },
+        { step: 2, action: 'click', selector: clickSelector, status: 'completed' },
+        { step: 3, action: 'extract', selector: extractSelector || 'body', status: 'completed' },
+        { step: 4, action: 'screenshot', status: takeScreenshot ? 'completed' : 'skipped' }
+      ],
+      data: {
+        url: page.url(),
+        extractedContent: extractedContent || 'No content found',
+        contentLength: extractedContent?.length || 0
+      },
+      screenshot: screenshotResult,
+      timestamp: new Date().toISOString()
+    };
+    
+  } catch (error) {
+    console.error('Navigate-click-extract workflow failed:', error.message);
+    return {
+      success: false,
+      workflow: 'navigate_click_extract',
+      error: error.message,
+      url: page.url(),
+      timestamp: new Date().toISOString()
+    };
+  }
+}
 async function extractHouseSigmaChartData(page, url) {
   const chartApiData = [];
   let responseHandler = null;
@@ -386,7 +513,7 @@ async function extractHouseSigmaChartData(page, url) {
   }
 }
 
-// Tool definitions
+// Tool definitions - Updated with workflow-based tools
 const toolsList = {
   tools: [
     {
@@ -463,6 +590,35 @@ const toolsList = {
       }
     },
     {
+      name: 'complete_mls_workflow',
+      description: 'Complete MLS workflow: navigate, click municipalities, gather data, screenshot',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'MLS Communities URL' },
+          municipalitySelector: { type: 'string', description: 'CSS selector for municipality layer', default: '#munilayer' },
+          takeScreenshot: { type: 'boolean', description: 'Capture screenshot after actions', default: true },
+          waitSeconds: { type: 'number', description: 'Seconds to wait after clicking', default: 3 }
+        },
+        required: ['url']
+      }
+    },
+    {
+      name: 'navigate_click_extract',
+      description: 'Navigate to URL, click element, extract content - complete workflow',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL to navigate to' },
+          clickSelector: { type: 'string', description: 'CSS selector to click' },
+          extractSelector: { type: 'string', description: 'CSS selector to extract content from (optional)' },
+          waitAfterClick: { type: 'number', description: 'Seconds to wait after clicking', default: 3 },
+          takeScreenshot: { type: 'boolean', description: 'Capture screenshot', default: false }
+        },
+        required: ['url', 'clickSelector']
+      }
+    },
+    {
       name: 'cleanup_resources',
       description: 'Force cleanup all browser resources',
       inputSchema: { type: 'object', properties: {}, required: [] }
@@ -477,24 +633,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   console.log(`Executing tool: ${name}`);
   
+  // Extract session ID from arguments (n8n workflows can pass this)
+  const sessionId = args.sessionId || 'default';
+  
   // Special case: cleanup tool
   if (name === 'cleanup_resources') {
-    await forceCleanupAll();
+    // If sessionId provided, clean up specific session, otherwise all
+    if (args.sessionId && sessions.has(args.sessionId)) {
+      const session = sessions.get(args.sessionId);
+      try {
+        await session.context.close();
+        sessions.delete(args.sessionId);
+        console.log(`Cleaned up session: ${args.sessionId}`);
+      } catch (e) {
+        console.warn(`Error cleaning session ${args.sessionId}:`, e.message);
+      }
+    } else {
+      await forceCleanupAll();
+    }
     return {
       content: [{
         type: 'text',
-        text: 'All browser resources cleaned up successfully'
+        text: 'Browser resources cleaned up successfully'
       }]
     };
   }
   
-  let context = null;
-  let page = null;
-  
-  try {
-    // Always use fresh context for each tool call
-    ({ context, page } = await createFreshContext());
+  // Use session-based context for stateful workflows
+  const { context, page } = await getSessionContext(sessionId);
     
+  try {
     switch (name) {
       case 'navigate_to_url':
         console.log(`Navigating to: ${args.url}`);
@@ -564,24 +732,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }]
         };
         
+      case 'complete_mls_workflow':
+        const mlsResult = await completeMlsWorkflow(
+          page, 
+          args.url, 
+          args.municipalitySelector || '#munilayer',
+          args.takeScreenshot !== false,
+          args.waitSeconds || 3
+        );
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(mlsResult, null, 2)
+          }]
+        };
+        
+      case 'navigate_click_extract':
+        const workflowResult = await navigateClickExtract(
+          page,
+          args.url,
+          args.clickSelector,
+          args.extractSelector,
+          args.waitAfterClick || 3,
+          args.takeScreenshot || false
+        );
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(workflowResult, null, 2)
+          }]
+        };
+        
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error) {
     console.error(`Tool execution failed for ${name}:`, error);
     throw new Error(`Tool execution failed: ${error.message}`);
-  } finally {
-    // CRITICAL: Always cleanup context immediately
-    if (context) {
-      try {
-        console.log('Closing browser context...');
-        await context.close();
-        console.log('Context closed successfully');
-      } catch (e) {
-        console.warn('Context cleanup error:', e.message);
-      }
-    }
   }
+  // No cleanup - sessions persist for multi-step workflows
+});
 });
 
 // HTTP server
@@ -761,6 +951,39 @@ const httpServer = http.createServer((req, res) => {
                       };
                       break;
                       
+                    case 'complete_mls_workflow':
+                      const mlsResult = await completeMlsWorkflow(
+                        page, 
+                        args.url, 
+                        args.municipalitySelector || '#munilayer',
+                        args.takeScreenshot !== false, // Default true
+                        args.waitSeconds || 3
+                      );
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(mlsResult, null, 2)
+                        }]
+                      };
+                      break;
+                      
+                    case 'navigate_click_extract':
+                      const workflowResult = await navigateClickExtract(
+                        page,
+                        args.url,
+                        args.clickSelector,
+                        args.extractSelector,
+                        args.waitAfterClick || 3,
+                        args.takeScreenshot || false
+                      );
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(workflowResult, null, 2)
+                        }]
+                      };
+                      break;
+                      
                     default:
                       throw new Error(`Unknown tool: ${name}`);
                   }
@@ -823,13 +1046,18 @@ const httpServer = http.createServer((req, res) => {
   res.end('Not Found');
 });
 
-// Periodic cleanup
+// Periodic cleanup - more frequent for session-based approach
 setInterval(() => {
   const cleaned = cleanupExpiredSessions();
   if (cleaned > 0) {
     console.log(`Periodic cleanup: removed ${cleaned} expired sessions`);
   }
-}, 30000); // Every 30 seconds
+  
+  // Force garbage collection if available
+  if (global.gc) {
+    global.gc();
+  }
+}, 60000); // Every 60 seconds
 
 // Graceful shutdown
 async function gracefulShutdown(signal) {
