@@ -709,6 +709,38 @@ const httpServer = http.createServer((req, res) => {
                       };
                       break;
                       
+                    case 'fill_form':
+                      await page.fill(args.selector, args.value);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: `Filled ${args.selector} with: ${args.value}`
+                        }]
+                      };
+                      break;
+                      
+                    case 'click_element':
+                      const timeout = args.timeout || 30000;
+                      await page.waitForSelector(args.selector, { timeout, state: 'visible' });
+                      await page.click(args.selector, { timeout });
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: `Clicked element: ${args.selector}`
+                        }]
+                      };
+                      break;
+                      
+                    case 'get_page_content':
+                      const content = await page.textContent('body');
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: content || 'No content found'
+                        }]
+                      };
+                      break;
+                      
                     case 'capture_screenshot':
                       const screenshotResult = await captureScreenshot(page, args.filename);
                       toolResult = {
