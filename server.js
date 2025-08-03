@@ -24,7 +24,7 @@ const SESSION_TIMEOUTS = {
   'auto_www_torontomls_net': 10 * 60 * 1000, // 10 minutes - MLS is complex
   'default': 5 * 60 * 1000                   // 5 minutes - general fallback
 };
-const MAX_SESSIONS = 3;
+const MAX_SESSIONS = 5; // Increased from 3 to handle concurrent workflows
 
 // Browser configuration - restored to original working config
 const BROWSER_CONFIG = {
@@ -38,7 +38,7 @@ const BROWSER_CONFIG = {
   ]
 };
 
-// Enhanced session ID extraction with STRICT workflow isolation
+// Enhanced session ID extraction with WORKFLOW CONTINUITY
 function getSessionId(args, toolName) {
   // If sessionId is explicitly provided, use it
   if (args.sessionId) {
@@ -59,22 +59,46 @@ function getSessionId(args, toolName) {
     }
   }
   
-  // For non-navigation tools, REQUIRE explicit sessionId or fail gracefully
-  // This prevents accidental cross-workflow contamination
-  if (sessions.size === 0) {
-    console.log('No existing sessions, using default');
-    return 'default';
-  } else if (sessions.size === 1) {
-    // Only if there's exactly ONE session, we can safely reuse it
-    const singleSessionId = Array.from(sessions.keys())[0];
-    console.log(`Using single existing session: ${singleSessionId}`);
-    return singleSessionId;
-  } else {
-    // Multiple sessions exist - this is dangerous!
-    // Log warning and use default to create new isolated session
-    console.warn(`Multiple sessions exist (${Array.from(sessions.keys()).join(', ')}), creating new default session for ${toolName} to prevent cross-contamination`);
-    return 'default_' + Date.now(); // Unique default session
+  // CRITICAL FIX: For non-navigation tools, try to reuse domain-specific sessions first
+  if (sessions.size > 0) {
+    // Look for existing domain-specific sessions first
+    const domainSessions = Array.from(sessions.keys()).filter(id => id.startsWith('auto_'));
+    
+    if (domainSessions.length === 1) {
+      // If there's exactly one domain session, use it (likely the current workflow)
+      const sessionId = domainSessions[0];
+      console.log(`Reusing domain-specific session for ${toolName}: ${sessionId}`);
+      return sessionId;
+    } else if (domainSessions.length > 1) {
+      // Multiple domain sessions - use the most recently used domain session
+      let mostRecentSession = null;
+      let mostRecentTime = 0;
+      
+      for (const sessionId of domainSessions) {
+        const session = sessions.get(sessionId);
+        if (session && session.lastUsed > mostRecentTime) {
+          mostRecentTime = session.lastUsed;
+          mostRecentSession = sessionId;
+        }
+      }
+      
+      if (mostRecentSession) {
+        console.log(`Using most recent domain session for ${toolName}: ${mostRecentSession}`);
+        return mostRecentSession;
+      }
+    }
+    
+    // Fallback: if only default sessions exist, use the most recent one
+    if (sessions.size === 1) {
+      const singleSessionId = Array.from(sessions.keys())[0];
+      console.log(`Using single existing session: ${singleSessionId}`);
+      return singleSessionId;
+    }
   }
+  
+  // Last resort: create new default session
+  console.log(`Creating new default session for ${toolName}`);
+  return 'default_' + Date.now();
 }
 
 // Helper function to ensure browser with resource monitoring
@@ -141,29 +165,46 @@ function cleanupExpiredSessions() {
   return expiredSessions.length;
 }
 
-// Enforce session limits
+// FIXED: Smarter session limit enforcement that preserves workflow continuity
 async function enforceSessionLimits() {
   if (sessions.size >= MAX_SESSIONS) {
-    // Close oldest session
-    let oldestSessionId = null;
-    let oldestTime = Date.now();
+    // Instead of just closing oldest, prioritize keeping domain-specific sessions
+    const sessionEntries = Array.from(sessions.entries());
     
-    for (const [sessionId, session] of sessions.entries()) {
-      if (session.lastUsed < oldestTime) {
-        oldestTime = session.lastUsed;
-        oldestSessionId = sessionId;
+    // Separate domain sessions from default sessions
+    const domainSessions = sessionEntries.filter(([id]) => id.startsWith('auto_'));
+    const defaultSessions = sessionEntries.filter(([id]) => id.startsWith('default_'));
+    
+    if (defaultSessions.length > 0) {
+      // Close oldest default session first (these are less important)
+      const oldestDefault = defaultSessions.sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
+      const [sessionId, session] = oldestDefault;
+      
+      console.log(`Enforcing limits: closing oldest default session: ${sessionId}`);
+      try {
+        await session.context.close();
+        sessions.delete(sessionId);
+        return;
+      } catch (e) {
+        console.warn(`Error closing default session ${sessionId}:`, e.message);
+        sessions.delete(sessionId);
+        return;
       }
     }
     
-    if (oldestSessionId) {
-      const session = sessions.get(oldestSessionId);
-      console.log(`Closing oldest session to enforce limits: ${oldestSessionId}`);
+    // Only if no default sessions exist, close oldest domain session
+    if (domainSessions.length > 0) {
+      const oldestDomain = domainSessions.sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
+      const [sessionId, session] = oldestDomain;
+      
+      console.log(`Enforcing limits: closing oldest domain session: ${sessionId}`);
       try {
         await session.context.close();
+        sessions.delete(sessionId);
       } catch (e) {
-        console.warn(`Error closing oldest session:`, e.message);
+        console.warn(`Error closing domain session ${sessionId}:`, e.message);
+        sessions.delete(sessionId);
       }
-      sessions.delete(oldestSessionId);
     }
   }
 }
@@ -1013,7 +1054,7 @@ setInterval(() => {
 
 // Enhanced periodic session monitoring
 setInterval(() => {
-  console.log(`Active sessions: ${sessions.size}`);
+  console.log(`Active sessions: ${sessions.size}/${MAX_SESSIONS}`);
   for (const [sessionId, session] of sessions.entries()) {
     const age = Date.now() - session.lastUsed;
     const timeout = SESSION_TIMEOUTS[sessionId] || SESSION_TIMEOUTS['default'];
@@ -1034,9 +1075,10 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // Start server
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
-  console.log(`Enhanced Playwright MCP Server running on port ${PORT}`);
+  console.log(`Fixed Playwright MCP Server running on port ${PORT}`);
   console.log(`Health check: /health`);
   console.log(`Manual cleanup: POST /cleanup`);
-  console.log('Enhanced session isolation for concurrent workflows');
+  console.log('Fixed session isolation for concurrent workflows');
   console.log('Session timeout configurations:', SESSION_TIMEOUTS);
+  console.log(`Maximum concurrent sessions: ${MAX_SESSIONS}`);
 });
