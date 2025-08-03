@@ -38,6 +38,45 @@ const BROWSER_CONFIG = {
   ]
 };
 
+// Enhanced session ID extraction with STRICT workflow isolation
+function getSessionId(args, toolName) {
+  // If sessionId is explicitly provided, use it
+  if (args.sessionId) {
+    console.log(`Using explicit session ID: ${args.sessionId}`);
+    return args.sessionId;
+  }
+  
+  // For navigation tools, auto-generate from URL
+  if (args.url && (toolName === 'navigate_to_url' || toolName === 'extract_housesigma_chart')) {
+    try {
+      const domain = new URL(args.url).hostname.replace(/[^a-zA-Z0-9]/g, '_');
+      const sessionId = `auto_${domain}`;
+      console.log(`Auto-generated session ID from URL: ${sessionId}`);
+      return sessionId;
+    } catch (e) {
+      console.warn('Failed to parse URL for session ID:', e.message);
+      return 'default';
+    }
+  }
+  
+  // For non-navigation tools, REQUIRE explicit sessionId or fail gracefully
+  // This prevents accidental cross-workflow contamination
+  if (sessions.size === 0) {
+    console.log('No existing sessions, using default');
+    return 'default';
+  } else if (sessions.size === 1) {
+    // Only if there's exactly ONE session, we can safely reuse it
+    const singleSessionId = Array.from(sessions.keys())[0];
+    console.log(`Using single existing session: ${singleSessionId}`);
+    return singleSessionId;
+  } else {
+    // Multiple sessions exist - this is dangerous!
+    // Log warning and use default to create new isolated session
+    console.warn(`Multiple sessions exist (${Array.from(sessions.keys()).join(', ')}), creating new default session for ${toolName} to prevent cross-contamination`);
+    return 'default_' + Date.now(); // Unique default session
+  }
+}
+
 // Helper function to ensure browser with resource monitoring
 async function ensureBrowser() {
   try {
@@ -168,6 +207,7 @@ function getContextConfig(sessionId) {
   
   return baseConfig;
 }
+
 // Get or create session-based context (for multi-step workflows)
 async function getSessionContext(sessionId = 'default') {
   console.log(`Getting session context: ${sessionId}`);
@@ -193,14 +233,13 @@ async function getSessionContext(sessionId = 'default') {
   // Enforce session limits
   await enforceSessionLimits();
   
-  // Create new session - simplified like original
+  // Create new session with site-specific config
   const browserInstance = await ensureBrowser();
-  const context = await browserInstance.newContext({
-    viewport: { width: 1200, height: 800 }
-  });
+  const contextConfig = getContextConfig(sessionId);
+  const context = await browserInstance.newContext(contextConfig);
   const page = await context.newPage();
   
-  // Set timeouts - same as original
+  // Set timeouts
   page.setDefaultTimeout(30000);
   page.setDefaultNavigationTimeout(30000);
   
@@ -210,7 +249,7 @@ async function getSessionContext(sessionId = 'default') {
     lastUsed: Date.now()
   });
   
-  console.log(`Created new session: ${sessionId}`);
+  console.log(`Created new session: ${sessionId} with config:`, JSON.stringify(contextConfig, null, 2));
   return { context, page };
 }
 
@@ -255,6 +294,7 @@ async function robustNavigation(page, url, options = {}) {
     }
   }
 }
+
 async function forceCleanupAll() {
   console.log('Forcing cleanup of all resources...');
   
@@ -575,50 +615,15 @@ const toolsList = {
   ]
 };
 
-// Tool handlers - SINGLE UNIFIED APPROACH
+// Tool handlers with enhanced session isolation
 server.setRequestHandler(ListToolsRequestSchema, async () => toolsList);
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   console.log(`Executing tool: ${name}`);
   
-  // Extract session ID from arguments (with better fallback logic)
-  let sessionId = args.sessionId;
-  if (!sessionId) {
-    // Auto-generate session ID based on URL domain for navigation tools
-    if (args.url) {
-      try {
-        const domain = new URL(args.url).hostname.replace(/[^a-zA-Z0-9]/g, '_');
-        sessionId = `auto_${domain}`;
-        console.log(`Auto-generated session ID from URL: ${sessionId}`);
-      } catch (e) {
-        sessionId = 'default';
-      }
-    } else {
-      // For non-navigation tools, try to reuse the most recent session
-      // This ensures click_element uses the same session as navigate_to_url
-      if (sessions.size === 1) {
-        // If there's exactly one session, use it
-        sessionId = Array.from(sessions.keys())[0];
-        console.log(`Using existing single session: ${sessionId}`);
-      } else if (sessions.size > 1) {
-        // If multiple sessions, use the most recently used one
-        let mostRecentSession = null;
-        let mostRecentTime = 0;
-        for (const [id, session] of sessions.entries()) {
-          if (session.lastUsed > mostRecentTime) {
-            mostRecentTime = session.lastUsed;
-            mostRecentSession = id;
-          }
-        }
-        sessionId = mostRecentSession || 'default';
-        console.log(`Using most recent session: ${sessionId}`);
-      } else {
-        sessionId = 'default';
-        console.log(`No existing sessions, using default`);
-      }
-    }
-  }
+  // Use enhanced session ID extraction
+  const sessionId = getSessionId(args, name);
   
   // Special case: cleanup tool
   if (name === 'cleanup_resources') {
@@ -648,14 +653,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'navigate_to_url':
-        console.log(`Navigating to: ${args.url}`);
+        console.log(`Navigating to: ${args.url} (session: ${sessionId})`);
         await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
         // Wait for dynamic content - same as original
         await page.waitForTimeout(3000);
         return {
           content: [{
             type: 'text',
-            text: `Successfully navigated to ${args.url} and waited for content to load`
+            text: `Successfully navigated to ${args.url} and waited for content to load (session: ${sessionId})`
           }]
         };
         
@@ -665,28 +670,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `Waited ${waitSeconds} seconds for content`
+            text: `Waited ${waitSeconds} seconds for content (session: ${sessionId})`
           }]
         };
         
       case 'fill_form':
+        console.log(`Filling form ${args.selector} in session: ${sessionId}`);
         await page.fill(args.selector, args.value);
         return {
           content: [{
             type: 'text',
-            text: `Filled ${args.selector} with: ${args.value}`
+            text: `Filled ${args.selector} with: ${args.value} (session: ${sessionId})`
           }]
         };
         
       case 'click_element':
         const timeout = args.timeout || 60000; // Restored original 60s timeout
+        console.log(`Clicking element ${args.selector} in session: ${sessionId}`);
         // Wait for element to be visible and clickable before attempting click
         await page.waitForSelector(args.selector, { timeout: timeout, state: 'visible' });
         await page.click(args.selector, { timeout });
         return {
           content: [{
             type: 'text',
-            text: `Successfully clicked element: ${args.selector}`
+            text: `Successfully clicked element: ${args.selector} (session: ${sessionId})`
           }]
         };
         
@@ -721,7 +728,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error) {
-    console.error(`Tool execution failed for ${name}:`, error);
+    console.error(`Tool execution failed for ${name} in session ${sessionId}:`, error);
     throw new Error(`Tool execution failed: ${error.message}`);
   }
   // No cleanup - sessions persist for multi-step workflows
@@ -744,6 +751,11 @@ const httpServer = http.createServer((req, res) => {
   // Health check with memory info
   if (req.method === 'GET' && req.url === '/health') {
     const memUsage = process.memoryUsage();
+    const sessionInfo = {};
+    for (const [sessionId, session] of sessions.entries()) {
+      sessionInfo[sessionId] = { lastUsed: new Date(session.lastUsed).toISOString() };
+    }
+    
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'healthy',
@@ -754,6 +766,7 @@ const httpServer = http.createServer((req, res) => {
         heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024) + 'MB'
       },
       activeSessions: sessions.size,
+      sessionDetails: sessionInfo,
       browserConnected: browser ? true : false,
       timestamp: new Date().toISOString()
     }));
@@ -806,40 +819,8 @@ const httpServer = http.createServer((req, res) => {
               const { name, arguments: args } = request.params;
               console.log(`Executing tool via HTTP: ${name}`);
               
-              // Extract session ID (with better fallback logic)
-              let sessionId = args.sessionId;
-              if (!sessionId) {
-                // Auto-generate session ID based on URL domain for navigation tools
-                if (args.url) {
-                  try {
-                    const domain = new URL(args.url).hostname.replace(/[^a-zA-Z0-9]/g, '_');
-                    sessionId = `auto_${domain}`;
-                    console.log(`Auto-generated session ID from URL: ${sessionId}`);
-                  } catch (e) {
-                    sessionId = 'default';
-                  }
-                } else {
-                  // For non-navigation tools, try to reuse the most recent session
-                  if (sessions.size === 1) {
-                    sessionId = Array.from(sessions.keys())[0];
-                    console.log(`Using existing single session: ${sessionId}`);
-                  } else if (sessions.size > 1) {
-                    let mostRecentSession = null;
-                    let mostRecentTime = 0;
-                    for (const [id, session] of sessions.entries()) {
-                      if (session.lastUsed > mostRecentTime) {
-                        mostRecentTime = session.lastUsed;
-                        mostRecentSession = id;
-                      }
-                    }
-                    sessionId = mostRecentSession || 'default';
-                    console.log(`Using most recent session: ${sessionId}`);
-                  } else {
-                    sessionId = 'default';
-                    console.log(`No existing sessions, using default`);
-                  }
-                }
-              }
+              // Use enhanced session ID extraction
+              const sessionId = getSessionId(args, name);
               
               // Special case: cleanup tool
               if (name === 'cleanup_resources') {
@@ -874,13 +855,13 @@ const httpServer = http.createServer((req, res) => {
                 try {
                   switch (name) {
                     case 'navigate_to_url':
-                      console.log(`Navigating to: ${args.url}`);
+                      console.log(`Navigating to: ${args.url} (session: ${sessionId})`);
                       await page.goto(args.url, { waitUntil: 'networkidle', timeout: 30000 });
                       await page.waitForTimeout(2000);
                       toolResult = {
                         content: [{
                           type: 'text',
-                          text: `Successfully navigated to ${args.url}`
+                          text: `Successfully navigated to ${args.url} (session: ${sessionId})`
                         }]
                       };
                       break;
@@ -891,29 +872,31 @@ const httpServer = http.createServer((req, res) => {
                       toolResult = {
                         content: [{
                           type: 'text',
-                          text: `Waited ${waitSeconds} seconds for content`
+                          text: `Waited ${waitSeconds} seconds for content (session: ${sessionId})`
                         }]
                       };
                       break;
                       
                     case 'fill_form':
+                      console.log(`Filling form ${args.selector} in session: ${sessionId}`);
                       await page.fill(args.selector, args.value);
                       toolResult = {
                         content: [{
                           type: 'text',
-                          text: `Filled ${args.selector} with: ${args.value}`
+                          text: `Filled ${args.selector} with: ${args.value} (session: ${sessionId})`
                         }]
                       };
                       break;
                       
                     case 'click_element':
                       const timeout = args.timeout || 30000;
+                      console.log(`Clicking element ${args.selector} in session: ${sessionId}`);
                       await page.waitForSelector(args.selector, { timeout, state: 'visible' });
                       await page.click(args.selector, { timeout });
                       toolResult = {
                         content: [{
                           type: 'text',
-                          text: `Clicked element: ${args.selector}`
+                          text: `Clicked element: ${args.selector} (session: ${sessionId})`
                         }]
                       };
                       break;
@@ -959,7 +942,7 @@ const httpServer = http.createServer((req, res) => {
                   };
                   
                 } catch (toolError) {
-                  console.error(`Tool execution failed for ${name}:`, toolError);
+                  console.error(`Tool execution failed for ${name} in session ${sessionId}:`, toolError);
                   response = {
                     jsonrpc: '2.0',
                     id: request.id,
@@ -1028,6 +1011,16 @@ setInterval(() => {
   }
 }, 60000); // Every 60 seconds
 
+// Enhanced periodic session monitoring
+setInterval(() => {
+  console.log(`Active sessions: ${sessions.size}`);
+  for (const [sessionId, session] of sessions.entries()) {
+    const age = Date.now() - session.lastUsed;
+    const timeout = SESSION_TIMEOUTS[sessionId] || SESSION_TIMEOUTS['default'];
+    console.log(`  ${sessionId}: last used ${Math.round(age/1000)}s ago (timeout: ${timeout/1000}s)`);
+  }
+}, 5 * 60 * 1000); // Every 5 minutes
+
 // Graceful shutdown
 async function gracefulShutdown(signal) {
   console.log(`${signal} received, shutting down gracefully...`);
@@ -1041,8 +1034,9 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // Start server
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
-  console.log(`Optimized Playwright MCP Server running on port ${PORT}`);
+  console.log(`Enhanced Playwright MCP Server running on port ${PORT}`);
   console.log(`Health check: /health`);
   console.log(`Manual cleanup: POST /cleanup`);
-  console.log('Session-based contexts for stateful workflows');
+  console.log('Enhanced session isolation for concurrent workflows');
+  console.log('Session timeout configurations:', SESSION_TIMEOUTS);
 });
