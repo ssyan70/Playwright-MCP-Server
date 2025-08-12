@@ -616,6 +616,17 @@ const toolsList = {
       }
     },
     {
+      name: 'get_page_html',
+      description: 'Get full HTML content of the current page',
+      inputSchema: { 
+        type: 'object', 
+        properties: {
+          sessionId: { type: 'string', description: 'Session ID for stateful workflows', default: 'default' }
+        }, 
+        required: [] 
+      }
+    },
+    {
       name: 'capture_screenshot',
       description: 'Capture screenshot as base64',
       inputSchema: {
@@ -744,6 +755,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{
             type: 'text',
             text: content || 'No content found'
+          }]
+        };
+
+      case 'get_page_html':
+        const html = await page.content();
+        return {
+          content: [{
+            type: 'text',
+            text: html || 'No HTML content found'
           }]
         };
 
@@ -948,6 +968,16 @@ const httpServer = http.createServer((req, res) => {
                         content: [{
                           type: 'text',
                           text: content || 'No content found'
+                        }]
+                      };
+                      break;
+                      
+                    case 'get_page_html':
+                      const html = await page.content();
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: html || 'No HTML content found'
                         }]
                       };
                       break;
