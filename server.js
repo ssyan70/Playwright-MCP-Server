@@ -22,6 +22,7 @@ const SESSION_TIMEOUTS = {
   'auto_www_onland_ca': 3 * 60 * 1000,      // 3 minutes - OnLand is fast
   'auto_housesigma_com': 8 * 60 * 1000,     // 8 minutes - HouseSigma needs auth
   'auto_www_torontomls_net': 10 * 60 * 1000, // 10 minutes - MLS is complex
+  'fnf_canada_workflow': 10 * 60 * 1000,    // 10 minutes - FNF Canada workflow
   'default': 5 * 60 * 1000                   // 5 minutes - general fallback
 };
 const MAX_SESSIONS = 5; // Increased from 3 to handle concurrent workflows
@@ -235,13 +236,14 @@ function getContextConfig(sessionId) {
       hasTouch: true, // Enable touch events for map interactions
       isMobile: false
     };
-  } else if (sessionId.includes('onland')) {
+  } else if (sessionId.includes('fnf') || sessionId.includes('appraiserconnect')) {
     return {
       ...baseConfig,
-      // OnLand optimizations - fast property searches
-      viewport: { width: 1200, height: 800 }, // Standard size
+      // FNF Canada optimizations
+      viewport: { width: 1200, height: 800 },
       extraHTTPHeaders: {
-        'Accept': 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
       }
     };
   }
@@ -313,8 +315,8 @@ async function robustNavigation(page, url, options = {}) {
         await page.waitForTimeout(5000); // Wait for React to load
       } else if (url.includes('torontomls.net')) {
         await page.waitForTimeout(4000); // Wait for map initialization
-      } else if (url.includes('onland.ca')) {
-        await page.waitForTimeout(2000); // OnLand is faster
+      } else if (url.includes('fnfcanada.ca') || url.includes('appraiserconnect.fnf.ca')) {
+        await page.waitForTimeout(2000); // FNF Canada is reasonably fast
       } else {
         await page.waitForTimeout(waitTime);
       }
@@ -551,6 +553,220 @@ async function extractHouseSigmaChartData(page, url) {
   }
 }
 
+// NEW TOOL FUNCTIONS
+
+// Wait for selector with timeout
+async function waitForSelector(page, selector, options = {}) {
+  try {
+    const timeout = options.timeout || 30000;
+    const state = options.state || 'visible';
+    
+    console.log(`Waiting for selector: ${selector} (state: ${state}, timeout: ${timeout}ms)`);
+    
+    await page.waitForSelector(selector, { 
+      timeout,
+      state: state 
+    });
+    
+    return {
+      success: true,
+      selector,
+      found: true,
+      timeout: timeout,
+      state: state
+    };
+  } catch (error) {
+    return {
+      success: false,
+      selector,
+      found: false,
+      error: error.message,
+      timeout: options.timeout || 30000
+    };
+  }
+}
+
+// Check element existence/visibility
+async function checkElementExists(page, selector, options = {}) {
+  try {
+    const checkVisible = options.checkVisible || false;
+    
+    if (checkVisible) {
+      const isVisible = await page.isVisible(selector);
+      return {
+        exists: true,
+        visible: isVisible,
+        selector,
+        checkType: 'visibility'
+      };
+    } else {
+      const element = await page.$(selector);
+      const exists = element !== null;
+      
+      let visible = false;
+      if (exists) {
+        visible = await page.isVisible(selector);
+      }
+      
+      return {
+        exists,
+        visible,
+        selector,
+        checkType: 'existence'
+      };
+    }
+  } catch (error) {
+    return {
+      exists: false,
+      visible: false,
+      selector,
+      error: error.message,
+      checkType: options.checkVisible ? 'visibility' : 'existence'
+    };
+  }
+}
+
+// Get element text or attributes
+async function getElementText(page, selector, options = {}) {
+  try {
+    const attribute = options.attribute;
+    
+    if (attribute) {
+      const value = await page.getAttribute(selector, attribute);
+      return {
+        success: true,
+        selector,
+        attribute,
+        value: value || '',
+        type: 'attribute'
+      };
+    } else {
+      const text = await page.textContent(selector);
+      return {
+        success: true,
+        selector,
+        text: text || '',
+        type: 'text'
+      };
+    }
+  } catch (error) {
+    return {
+      success: false,
+      selector,
+      error: error.message,
+      type: options.attribute ? 'attribute' : 'text'
+    };
+  }
+}
+
+// Extract table data
+async function extractTableData(page, tableSelector, options = {}) {
+  try {
+    const includeHeaders = options.includeHeaders !== false; // Default to true
+    
+    const tableData = await page.evaluate((selector, includeHeaders) => {
+      const table = document.querySelector(selector);
+      if (!table) {
+        throw new Error(`Table not found with selector: ${selector}`);
+      }
+      
+      const rows = Array.from(table.querySelectorAll('tr'));
+      if (rows.length === 0) {
+        return { headers: [], data: [], rowCount: 0 };
+      }
+      
+      let headers = [];
+      let dataRows = rows;
+      
+      // Try to detect headers
+      const firstRow = rows[0];
+      const hasThElements = firstRow.querySelectorAll('th').length > 0;
+      const hasTheadParent = firstRow.closest('thead') !== null;
+      
+      if (hasThElements || hasTheadParent) {
+        // First row contains headers
+        headers = Array.from(firstRow.querySelectorAll('th, td')).map(cell => 
+          cell.textContent.trim()
+        );
+        dataRows = rows.slice(1);
+      } else if (includeHeaders && rows.length > 1) {
+        // Assume first row is headers even if no th elements
+        headers = Array.from(firstRow.querySelectorAll('td')).map(cell => 
+          cell.textContent.trim()
+        );
+        dataRows = rows.slice(1);
+      }
+      
+      // Extract data rows
+      const data = dataRows.map(row => {
+        return Array.from(row.querySelectorAll('td')).map(cell => 
+          cell.textContent.trim()
+        );
+      }).filter(row => row.length > 0); // Filter out empty rows
+      
+      return {
+        headers,
+        data,
+        rowCount: data.length,
+        columnCount: headers.length || (data[0]?.length || 0)
+      };
+    }, tableSelector, includeHeaders);
+    
+    return {
+      success: true,
+      tableSelector,
+      ...tableData
+    };
+  } catch (error) {
+    return {
+      success: false,
+      tableSelector,
+      error: error.message,
+      headers: [],
+      data: [],
+      rowCount: 0
+    };
+  }
+}
+
+// Get cookies
+async function getCookies(page, domain = null) {
+  try {
+    const context = page.context();
+    const allCookies = await context.cookies();
+    
+    let filteredCookies = allCookies;
+    if (domain) {
+      filteredCookies = allCookies.filter(cookie => 
+        cookie.domain.includes(domain) || domain.includes(cookie.domain)
+      );
+    }
+    
+    // Format cookies for easy use in HTTP requests
+    const cookieString = filteredCookies
+      .map(cookie => `${cookie.name}=${cookie.value}`)
+      .join('; ');
+    
+    return {
+      success: true,
+      domain: domain || 'all',
+      cookieCount: filteredCookies.length,
+      cookieString,
+      cookies: filteredCookies,
+      url: page.url()
+    };
+  } catch (error) {
+    return {
+      success: false,
+      domain: domain || 'all',
+      error: error.message,
+      cookieCount: 0,
+      cookieString: '',
+      cookies: []
+    };
+  }
+}
+
 // Tool definitions
 const toolsList = {
   tools: [
@@ -576,6 +792,46 @@ const toolsList = {
           sessionId: { type: 'string', description: 'Session ID for stateful workflows', default: 'default' }
         },
         required: []
+      }
+    },
+    {
+      name: 'wait_for_selector',
+      description: 'Wait for a specific element to appear',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector to wait for' },
+          timeout: { type: 'number', description: 'Timeout in ms (default: 30000)', default: 30000 },
+          state: { type: 'string', description: 'Element state to wait for (visible, attached, detached, hidden)', default: 'visible' },
+          sessionId: { type: 'string', description: 'Session ID for stateful workflows', default: 'default' }
+        },
+        required: ['selector']
+      }
+    },
+    {
+      name: 'check_element_exists',
+      description: 'Check if element exists or is visible',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector' },
+          checkVisible: { type: 'boolean', description: 'Check visibility instead of existence', default: false },
+          sessionId: { type: 'string', description: 'Session ID for stateful workflows', default: 'default' }
+        },
+        required: ['selector']
+      }
+    },
+    {
+      name: 'get_element_text',
+      description: 'Extract text content or attributes from specific elements',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector' },
+          attribute: { type: 'string', description: 'Optional: get attribute value instead of text' },
+          sessionId: { type: 'string', description: 'Session ID for stateful workflows', default: 'default' }
+        },
+        required: ['selector']
       }
     },
     {
@@ -627,6 +883,31 @@ const toolsList = {
       }
     },
     {
+      name: 'extract_table_data',
+      description: 'Extract data from HTML tables',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tableSelector: { type: 'string', description: 'CSS selector for table' },
+          includeHeaders: { type: 'boolean', description: 'Include header row', default: true },
+          sessionId: { type: 'string', description: 'Session ID for stateful workflows', default: 'default' }
+        },
+        required: ['tableSelector']
+      }
+    },
+    {
+      name: 'get_cookies',
+      description: 'Extract browser cookies for session transfer',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          domain: { type: 'string', description: 'Optional: filter by domain' },
+          sessionId: { type: 'string', description: 'Session ID for stateful workflows', default: 'default' }
+        },
+        required: []
+      }
+    },
+    {
       name: 'capture_screenshot',
       description: 'Capture screenshot as base64',
       inputSchema: {
@@ -649,21 +930,7 @@ const toolsList = {
         },
         required: ['url']
       }
-    },
-    {
-      name: 'onland_property_search',
-      description: 'Complete OnLand property search workflow: navigate, search, extract results',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          searchQuery: { type: 'string', description: 'Property search query (address, city, etc.)' },
-          propertyType: { type: 'string', description: 'Property type filter', default: 'all' },
-          takeScreenshot: { type: 'boolean', description: 'Capture screenshot of results', default: true },
-          maxResults: { type: 'number', description: 'Maximum results to extract', default: 10 }
-        },
-        required: ['searchQuery']
-      }
-    },
+    }
   ]
 };
 
@@ -725,6 +992,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             text: `Waited ${waitSeconds} seconds for content (session: ${sessionId})`
           }]
         };
+
+      case 'wait_for_selector':
+        const selectorResult = await waitForSelector(page, args.selector, {
+          timeout: args.timeout,
+          state: args.state
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(selectorResult, null, 2)
+          }]
+        };
+
+      case 'check_element_exists':
+        const existsResult = await checkElementExists(page, args.selector, {
+          checkVisible: args.checkVisible
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(existsResult, null, 2)
+          }]
+        };
+
+      case 'get_element_text':
+        const textResult = await getElementText(page, args.selector, {
+          attribute: args.attribute
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(textResult, null, 2)
+          }]
+        };
         
       case 'fill_form':
         console.log(`Filling form ${args.selector} in session: ${sessionId}`);
@@ -764,6 +1065,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{
             type: 'text',
             text: html || 'No HTML content found'
+          }]
+        };
+
+      case 'extract_table_data':
+        const tableResult = await extractTableData(page, args.tableSelector, {
+          includeHeaders: args.includeHeaders
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(tableResult, null, 2)
+          }]
+        };
+
+      case 'get_cookies':
+        const cookiesResult = await getCookies(page, args.domain);
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(cookiesResult, null, 2)
           }]
         };
 
@@ -937,6 +1258,43 @@ const httpServer = http.createServer((req, res) => {
                         }]
                       };
                       break;
+
+                    case 'wait_for_selector':
+                      const selectorResult = await waitForSelector(page, args.selector, {
+                        timeout: args.timeout,
+                        state: args.state
+                      });
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(selectorResult, null, 2)
+                        }]
+                      };
+                      break;
+
+                    case 'check_element_exists':
+                      const existsResult = await checkElementExists(page, args.selector, {
+                        checkVisible: args.checkVisible
+                      });
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(existsResult, null, 2)
+                        }]
+                      };
+                      break;
+
+                    case 'get_element_text':
+                      const textResult = await getElementText(page, args.selector, {
+                        attribute: args.attribute
+                      });
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(textResult, null, 2)
+                        }]
+                      };
+                      break;
                       
                     case 'fill_form':
                       console.log(`Filling form ${args.selector} in session: ${sessionId}`);
@@ -978,6 +1336,28 @@ const httpServer = http.createServer((req, res) => {
                         content: [{
                           type: 'text',
                           text: html || 'No HTML content found'
+                        }]
+                      };
+                      break;
+
+                    case 'extract_table_data':
+                      const tableResult = await extractTableData(page, args.tableSelector, {
+                        includeHeaders: args.includeHeaders
+                      });
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(tableResult, null, 2)
+                        }]
+                      };
+                      break;
+
+                    case 'get_cookies':
+                      const cookiesResult = await getCookies(page, args.domain);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(cookiesResult, null, 2)
                         }]
                       };
                       break;
@@ -1105,10 +1485,12 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // Start server
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
-  console.log(`Fixed Playwright MCP Server running on port ${PORT}`);
+  console.log(`Enhanced Playwright MCP Server running on port ${PORT}`);
   console.log(`Health check: /health`);
   console.log(`Manual cleanup: POST /cleanup`);
-  console.log('Fixed session isolation for concurrent workflows');
+  console.log('Enhanced with new tools for better workflow automation');
   console.log('Session timeout configurations:', SESSION_TIMEOUTS);
   console.log(`Maximum concurrent sessions: ${MAX_SESSIONS}`);
+  console.log('New tools added: wait_for_selector, check_element_exists, get_element_text, extract_table_data, get_cookies');
+  console.log('Removed: onland_property_search');
 });
