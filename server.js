@@ -732,15 +732,36 @@ async function extractTableData(page, tableSelector, options = {}) {
 // View screenshot function
 async function viewScreenshot(base64Data, filename = 'screenshot.png') {
   try {
+    console.log('viewScreenshot called with:', {
+      dataType: typeof base64Data,
+      dataLength: base64Data ? base64Data.length : 0,
+      filename: filename
+    });
+
+    // Handle different input formats
+    let cleanBase64 = base64Data;
+    
+    // If it's a JSON string, try to parse it
+    if (typeof base64Data === 'string' && base64Data.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(base64Data);
+        cleanBase64 = parsed.base64 || parsed.base64Data || base64Data;
+        console.log('Parsed JSON input, extracted base64 length:', cleanBase64.length);
+      } catch (parseError) {
+        console.log('Failed to parse as JSON, treating as raw base64');
+        cleanBase64 = base64Data;
+      }
+    }
+
     // Validate base64 data
-    if (!base64Data || typeof base64Data !== 'string') {
+    if (!cleanBase64 || typeof cleanBase64 !== 'string') {
       throw new Error('Invalid base64 data provided');
     }
 
     // Clean base64 data (remove data URL prefix if present)
-    let cleanBase64 = base64Data;
-    if (base64Data.startsWith('data:image/')) {
-      cleanBase64 = base64Data.split(',')[1];
+    if (cleanBase64.startsWith('data:image/')) {
+      cleanBase64 = cleanBase64.split(',')[1];
+      console.log('Removed data URL prefix');
     }
 
     // Validate it's proper base64
@@ -755,6 +776,12 @@ async function viewScreenshot(base64Data, filename = 'screenshot.png') {
 
     // Create data URL for immediate viewing
     const dataUrl = `data:image/png;base64,${cleanBase64}`;
+
+    console.log('Successfully processed screenshot:', {
+      originalLength: base64Data.length,
+      cleanLength: cleanBase64.length,
+      sizeKB: sizeKB
+    });
 
     return {
       success: true,
@@ -773,11 +800,17 @@ async function viewScreenshot(base64Data, filename = 'screenshot.png') {
       }
     };
   } catch (error) {
+    console.error('viewScreenshot error:', error);
     return {
       success: false,
       error: `Screenshot viewing failed: ${error.message}`,
       filename: filename,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      debugInfo: {
+        inputType: typeof base64Data,
+        inputLength: base64Data ? base64Data.length : 0,
+        inputSample: base64Data ? base64Data.substring(0, 100) : 'null'
+      }
     };
   }
 }
