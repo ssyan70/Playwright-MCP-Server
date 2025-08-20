@@ -729,7 +729,58 @@ async function extractTableData(page, tableSelector, options = {}) {
   }
 }
 
-// Get cookies
+// View screenshot function
+async function viewScreenshot(base64Data, filename = 'screenshot.png') {
+  try {
+    // Validate base64 data
+    if (!base64Data || typeof base64Data !== 'string') {
+      throw new Error('Invalid base64 data provided');
+    }
+
+    // Clean base64 data (remove data URL prefix if present)
+    let cleanBase64 = base64Data;
+    if (base64Data.startsWith('data:image/')) {
+      cleanBase64 = base64Data.split(',')[1];
+    }
+
+    // Validate it's proper base64
+    const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+    if (!base64Regex.test(cleanBase64)) {
+      throw new Error('Invalid base64 format');
+    }
+
+    // Calculate image size
+    const binaryLength = Math.ceil(cleanBase64.length * 0.75);
+    const sizeKB = Math.round(binaryLength / 1024);
+
+    // Create data URL for immediate viewing
+    const dataUrl = `data:image/png;base64,${cleanBase64}`;
+
+    return {
+      success: true,
+      filename: filename,
+      dataUrl: dataUrl,
+      base64: cleanBase64,
+      sizeKB: sizeKB,
+      viewInstructions: "Copy the dataUrl and paste into browser address bar to view",
+      timestamp: new Date().toISOString(),
+      // For N8N binary data format
+      binaryData: {
+        data: cleanBase64,
+        mimeType: 'image/png',
+        fileName: filename,
+        fileExtension: 'png'
+      }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Screenshot viewing failed: ${error.message}`,
+      filename: filename,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
 async function getCookies(page, domain = null) {
   try {
     const context = page.context();
@@ -930,6 +981,18 @@ const toolsList = {
         },
         required: ['url']
       }
+    },
+    {
+      name: 'view_screenshot',
+      description: 'Display base64 screenshot as viewable image data',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          base64Data: { type: 'string', description: 'Base64 screenshot data from capture_screenshot' },
+          filename: { type: 'string', description: 'Optional filename for the image', default: 'screenshot.png' }
+        },
+        required: ['base64Data']
+      }
     }
   ]
 };
@@ -1094,6 +1157,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{
             type: 'text',
             text: JSON.stringify(screenshotResult, null, 2)
+          }]
+        };
+
+      case 'view_screenshot':
+        const viewResult = await viewScreenshot(args.base64Data, args.filename);
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(viewResult, null, 2)
           }]
         };
 
@@ -1372,6 +1444,16 @@ const httpServer = http.createServer((req, res) => {
                       };
                       break;
                       
+                    case 'view_screenshot':
+                      const viewResult = await viewScreenshot(args.base64Data, args.filename);
+                      toolResult = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify(viewResult, null, 2)
+                        }]
+                      };
+                      break;
+
                     case 'extract_housesigma_chart':
                       const chartResult = await extractHouseSigmaChartData(page, args.url);
                       toolResult = {
