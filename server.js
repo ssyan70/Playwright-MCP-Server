@@ -586,15 +586,19 @@ async function waitForSelector(page, selector, options = {}) {
   }
 }
 
-// Check element existence/visibility
+// FIXED: Check element existence/visibility
 async function checkElementExists(page, selector, options = {}) {
   try {
     const checkVisible = options.checkVisible || false;
     
     if (checkVisible) {
-      const isVisible = await page.isVisible(selector);
+      // FIXED: First check existence, then visibility
+      const element = await page.$(selector);
+      const exists = element !== null;
+      const isVisible = exists ? await page.isVisible(selector) : false;
+      
       return {
-        exists: true,
+        exists: exists,
         visible: isVisible,
         selector,
         checkType: 'visibility'
@@ -1493,4 +1497,5 @@ httpServer.listen(PORT, () => {
   console.log(`Maximum concurrent sessions: ${MAX_SESSIONS}`);
   console.log('New tools added: wait_for_selector, check_element_exists, get_element_text, extract_table_data, get_cookies');
   console.log('Removed: onland_property_search');
+  console.log('FIXED: check_element_exists now properly reports element existence');
 });
